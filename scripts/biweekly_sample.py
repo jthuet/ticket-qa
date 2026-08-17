@@ -26,6 +26,12 @@ state/last_sample_window.json records the end date of the last window
 actually sampled (set by this script AND by backfill_sample.py), so a
 manual re-run of the workflow on an already-covered date can't append a
 duplicate row.
+
+TARGET_AGENT_EMAIL defaults to "jbell@nextpoint.com" but can be overridden
+by a repo secret of the same name, so tracking a different agent later
+doesn't need a code change. The tab this writes to is named after the
+agent's email handle (the part before "@"), so switching agents starts a
+fresh tab rather than mixing tickets from two agents into one.
 """
 import json
 import os
@@ -37,8 +43,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
 from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
 
-TARGET_AGENT_EMAIL = "jbell@nextpoint.com"
-TAB_TITLE = "QA Sample"
+# `or` (not .get(..., default)) because GitHub Actions substitutes an unset
+# secret as an empty string, not a missing variable -- .get()'s default
+# would never kick in.
+TARGET_AGENT_EMAIL = os.environ.get("TARGET_AGENT_EMAIL") or "jbell@nextpoint.com"
+AGENT_HANDLE = TARGET_AGENT_EMAIL.split("@")[0]
+TAB_TITLE = f"{AGENT_HANDLE} QA Sample"
 HEADER = [
     "Pull Date",
     "John's Ticket Link",

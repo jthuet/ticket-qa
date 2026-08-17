@@ -19,6 +19,13 @@ Required environment variables:
     that Cloud project -- Docs/Drive being enabled there already doesn't
     cover Sheets
   GOOGLE_SHEET_ID  -- the target spreadsheet's ID (from its URL)
+
+Optional environment variable:
+  TARGET_AGENT_EMAIL  -- defaults to "jbell@nextpoint.com" if unset. Set
+    this repo secret to track a different agent later without a code
+    change. The tab this writes to is named after the agent's email
+    handle (the part before "@"), so switching agents starts a fresh tab
+    rather than mixing tickets from two agents into one.
 """
 import json
 import os
@@ -30,9 +37,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 from zendesk_client import find_tickets_with_public_comment  # noqa: E402
 from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
 
-TARGET_AGENT_EMAIL = "jbell@nextpoint.com"
-TAB_TITLE = "Ticket Log"
-HEADER = ["Week Ending", "Ticket ID", "Ticket Link", "Subject", "Requester", "Status", "jbell Comment Date"]
+# `or` (not .get(..., default)) because GitHub Actions substitutes an unset
+# secret as an empty string, not a missing variable -- .get()'s default
+# would never kick in.
+TARGET_AGENT_EMAIL = os.environ.get("TARGET_AGENT_EMAIL") or "jbell@nextpoint.com"
+AGENT_HANDLE = TARGET_AGENT_EMAIL.split("@")[0]
+TAB_TITLE = f"{AGENT_HANDLE} Ticket Log"
+HEADER = ["Week Ending", "Ticket ID", "Ticket Link", "Subject", "Requester", "Status", f"{AGENT_HANDLE} Comment Date"]
 
 ET = ZoneInfo("America/New_York")
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "last_weekly_sync.json")
@@ -82,7 +93,7 @@ def main():
         append_rows(service, sheet_id, TAB_TITLE, rows)
         print(f"Appended {len(rows)} ticket(s) to '{TAB_TITLE}'.")
     else:
-        print("No tickets with a new public jbell comment since last sync.")
+        print(f"No tickets with a new public {AGENT_HANDLE} comment since last sync.")
 
     state["last_synced_at"] = window_end.isoformat()
     save_state(state)

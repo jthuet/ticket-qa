@@ -57,9 +57,11 @@ same project: **APIs & Services → Library → Google Sheets API → Enable**.
 3. Copy the Sheet's ID from its URL:
    `https://docs.google.com/spreadsheets/d/THIS_PART_IS_THE_ID/edit`
 
-The "Ticket Log" and "QA Sample" tabs are created automatically (with
-header rows) the first time each job runs — you don't need to create them
-yourself.
+The tabs (one per job) are created automatically (with header rows) the
+first time each job runs, named after the target agent's email handle —
+see "Who counts as jbell" below — so with the default agent that's
+**"jbell Ticket Log"** and **"jbell QA Sample"**. You don't need to create
+them yourself.
 
 ### 4. Add secrets to this GitHub repo
 
@@ -72,6 +74,7 @@ yourself.
 | `ZENDESK_API_TOKEN` | your Zendesk API token |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | paste the entire contents of the service account's JSON key file |
 | `GOOGLE_SHEET_ID` | the Sheet ID from step 3 |
+| `TARGET_AGENT_EMAIL` | optional — defaults to `jbell@nextpoint.com` if this secret doesn't exist. See "Who counts as jbell" below. |
 
 ### 5. Run the one-time historical backfill
 
@@ -125,16 +128,21 @@ The job logs a warning when this happens.
 
 ## Who counts as "jbell"
 
-Both jobs look for public comments authored by `jbell@nextpoint.com`,
-hardcoded as `TARGET_AGENT_EMAIL` near the top of `scripts/weekly_log.py`
-and `scripts/biweekly_sample.py`. Edit both if this ever needs to change
-(**internal notes don't count** — only comments Zendesk itself marks
-`public: true`, i.e. ones visible to the ticket requester).
+Both jobs look for public comments authored by `TARGET_AGENT_EMAIL`, which
+defaults to `jbell@nextpoint.com` if the `TARGET_AGENT_EMAIL` repo secret
+isn't set (**internal notes don't count** — only comments Zendesk itself
+marks `public: true`, i.e. ones visible to the ticket requester).
+
+To track a different agent later, just add/update the `TARGET_AGENT_EMAIL`
+secret — no code change needed. Each tab is named after the agent's email
+handle (the part before `@`), so switching agents starts fresh tabs
+(e.g. `gsperling Ticket Log`) rather than mixing tickets from two agents
+into the same tab.
 
 ## Sheet columns
 
 **Ticket Log:** Week Ending, Ticket ID, Ticket Link, Subject, Requester,
-Status, jbell Comment Date.
+Status, `<handle>` Comment Date (e.g. "jbell Comment Date").
 
 **QA Sample:** Pull Date, John's Ticket Link, Gabby's Ticket Link, Backup 1
 Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
