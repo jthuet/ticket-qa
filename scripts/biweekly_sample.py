@@ -2,10 +2,14 @@
 """
 biweekly_sample.py
 
-Every two weeks, picks a random 1 primary + up to 3 backup tickets (from
-tickets with a public jbell@nextpoint.com comment in the preceding 2-week
-window) for manual QA scoring, and appends one row to the "QA Sample" tab
-of GOOGLE_SHEET_ID.
+Every two weeks, picks 6 random tickets (from tickets with a public
+jbell@nextpoint.com comment in the preceding 2-week window) for manual QA
+scoring, and appends one row to the "QA Sample" tab of GOOGLE_SHEET_ID: one
+ticket for evaluator John to score, one for evaluator Gabby to score, and
+4 shared backups. "John" and "Gabby" are just the two evaluator slots --
+think eval1/eval2 -- not a filter on who commented; every one of the 6
+tickets is drawn from the exact same jbell-commented population, and
+John/Gabby's own email addresses never enter into it.
 
 GitHub Actions cron has no native "every 2 weeks" schedule, so this runs
 every Friday (see .github/workflows/biweekly_sample.yml, same 11pm ET time
@@ -30,12 +34,24 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
-from sampling import sample_window  # noqa: E402
+from sampling import sample_window, SLOTS  # noqa: E402
 from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
 
 TARGET_AGENT_EMAIL = "jbell@nextpoint.com"
 TAB_TITLE = "QA Sample"
-HEADER = ["Pull Date", "Primary Ticket Link", "Backup 1 Link", "Backup 2 Link", "Backup 3 Link", "Score", "Notes"]
+HEADER = [
+    "Pull Date",
+    "John's Ticket Link",
+    "Gabby's Ticket Link",
+    "Backup 1 Link",
+    "Backup 2 Link",
+    "Backup 3 Link",
+    "Backup 4 Link",
+    "John Score",
+    "John Notes",
+    "Gabby Score",
+    "Gabby Notes",
+]
 
 ET = ZoneInfo("America/New_York")
 ANCHOR_DATE = datetime(2026, 8, 14, tzinfo=ET).date()
@@ -85,10 +101,14 @@ def row_for_window(subdomain, email, token, window_end_date, window_start_date):
 
     row = [
         window_end_date.isoformat(),
-        link("primary"),
+        link("john"),
+        link("gabby"),
         link("backup1"),
         link("backup2"),
         link("backup3"),
+        link("backup4"),
+        "",
+        "",
         "",
         "",
     ]
@@ -119,7 +139,7 @@ def main():
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
 
     row, population_size = row_for_window(subdomain, email, token, today, window_start_date)
-    if population_size < 4:
+    if population_size < len(SLOTS):
         print(
             f"WARNING: only {population_size} qualifying ticket(s) in "
             f"{window_start_date.isoformat()}..{today.isoformat()} -- filled as many slots as available."

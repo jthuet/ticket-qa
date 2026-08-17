@@ -12,9 +12,13 @@ growing Google Sheet:
    from `jbell@nextpoint.com` since the last run, to the sheet's
    **"Ticket Log"** tab. Append-only, keeps growing forever.
 2. **Biweekly QA sample** (`scripts/biweekly_sample.py`, every other Friday
-   11pm ET) — randomly picks 1 primary + up to 3 backup tickets (from
-   tickets with a public jbell comment in the preceding 2-week window) and
-   appends one row to the **"QA Sample"** tab, for manual scoring.
+   11pm ET) — randomly picks 6 tickets from the same population (tickets
+   with a public jbell comment in the preceding 2-week window): one for
+   evaluator John to score, one for evaluator Gabby to score, and 4 shared
+   backups. Appends one row to the **"QA Sample"** tab, for manual scoring.
+   "John" and "Gabby" are just the two evaluator slots (think eval1/eval2)
+   — every ticket is drawn from the same jbell-commented population, and
+   John/Gabby's own email addresses play no part in the selection.
 3. **One-time historical backfill** (`scripts/backfill_sample.py`, run
    manually once) — does the same biweekly sample, but for every 2-week
    window from **2026-05-01 to 2026-08-14**, so the "QA Sample" tab starts
@@ -114,9 +118,9 @@ same non-overlapping 14-day tiling the biweekly job uses going forward.
 That leaves an 8-day leftover stretch, 2026-05-01–05-08, short of a full
 2-week window — it's included as its own short row rather than dropped.
 
-**If a window has fewer than 4 qualifying tickets** (should be rare):
-slots are filled in order (primary, then backup 1, 2, 3) and any
-remaining slots are left blank, rather than reusing a ticket to force 4.
+**If a window has fewer than 6 qualifying tickets** (should be rare):
+slots are filled in order (John, then Gabby, then backup 1–4) and any
+remaining slots are left blank, rather than reusing a ticket to force 6.
 The job logs a warning when this happens.
 
 ## Who counts as "jbell"
@@ -132,8 +136,9 @@ and `scripts/biweekly_sample.py`. Edit both if this ever needs to change
 **Ticket Log:** Week Ending, Ticket ID, Ticket Link, Subject, Requester,
 Status, jbell Comment Date.
 
-**QA Sample:** Pull Date, Primary Ticket Link, Backup 1 Link, Backup 2
-Link, Backup 3 Link, Score, Notes. The last two columns are left blank for
+**QA Sample:** Pull Date, John's Ticket Link, Gabby's Ticket Link, Backup 1
+Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
+Gabby Score, Gabby Notes. The four score/notes columns are left blank for
 you to fill in by hand — nothing writes to them automatically.
 
 ## If a workflow fails on "Commit updated sync state" / "Commit seeded sample state"

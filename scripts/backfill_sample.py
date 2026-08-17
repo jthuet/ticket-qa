@@ -28,6 +28,7 @@ from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 from biweekly_sample import row_for_window, HEADER, TAB_TITLE, ANCHOR_DATE, save_state  # noqa: E402
+from sampling import SLOTS  # noqa: E402
 from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
 
 RANGE_START = date(2026, 5, 1)
@@ -65,7 +66,7 @@ def main():
     rows = []
     for window_start, window_end in windows:
         row, population_size = row_for_window(subdomain, email, token, window_end, window_start)
-        if population_size < 4:
+        if population_size < len(SLOTS):
             print(f"  WARNING: only {population_size} qualifying ticket(s) in {window_start}..{window_end}.")
         else:
             print(f"  {window_start}..{window_end}: {population_size} qualifying ticket(s).")
