@@ -1,0 +1,16 @@
+# Secrets / credentials — never commit these
+Key/
+*.pem
+*.p12
+*-key.json
+service-account*.json
+.env
+.env.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
