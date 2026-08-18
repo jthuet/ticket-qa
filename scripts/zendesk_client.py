@@ -12,8 +12,18 @@ then a per-ticket comments.json fetch confirms the exact qualifying
 comment(s) -- Search's `commenter:`/`updated:` operators only have
 day-level precision and don't tell you whether a specific comment was
 public, so the real filter always happens against the comment thread
-itself, with Search's date bounds padded a day on each side as a
-generous net.
+itself.
+
+Search is only ever bounded with a LOWER date limit (`updated>=...`), never
+an upper one. Zendesk's `updated` field is the date of the ticket's most
+recent update, not of any particular comment -- a ticket that got a
+qualifying comment inside the window but was touched again afterward
+(a later reply, a CSAT survey, a reopen, an unrelated field edit) would
+have `updated_at` well past the window, so an upper bound would wrongly
+drop it from the candidate set entirely before the precise per-comment
+filter ever got a chance to look at it. Adding a comment always sets
+`updated_at` to at least that comment's own timestamp, though, so a lower
+bound alone can never exclude a ticket that actually qualifies.
 
 Required environment variables (read by callers, not this module):
   ZENDESK_SUBDOMAIN   e.g. "nextpoint" for nextpoint.zendesk.com
@@ -34,18 +44,14 @@ def parse_zendesk_ts(ts):
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-def _search_candidate_tickets(subdomain, email, api_token, agent_email, start_dt, end_dt):
-    """Search for tickets with agent_email as a commenter, updated anywhere
-    within [start_dt - 1 day, end_dt + 1 day] -- a deliberately generous net
-    since Search's date operators are day-granular. Side-loads `users` so
-    the caller can resolve each ticket's requester without a second
-    lookup."""
+def _search_candidate_tickets(subdomain, email, api_token, agent_email, start_dt):
+    """Search for tickets with agent_email as a commenter, updated at/after
+    start_dt - 1 day (a day of padding since Search's date operators are
+    day-granular, not datetime-granular) -- deliberately no upper bound,
+    see the module docstring for why. Side-loads `users` so the caller can
+    resolve each ticket's requester without a second lookup."""
     auth = _auth(email, api_token)
-    query = (
-        f"type:ticket commenter:{agent_email} "
-        f'updated>={(start_dt - timedelta(days=1)).strftime("%Y-%m-%d")} '
-        f'updated<={(end_dt + timedelta(days=1)).strftime("%Y-%m-%d")}'
-    )
+    query = f'type:ticket commenter:{agent_email} updated>={(start_dt - timedelta(days=1)).strftime("%Y-%m-%d")}'
     url = f"https://{subdomain}.zendesk.com/api/v2/search.json"
     params = {"query": query, "sort_by": "updated_at", "sort_order": "asc", "include": "users"}
     tickets = []
@@ -93,9 +99,7 @@ def find_tickets_with_public_comment(subdomain, email, api_token, agent_email, s
     ISO string -- a ticket can have more than one matching comment in a
     window and only one column is available to record it in the Sheet)."""
     agent_email = agent_email.lower()
-    candidates, search_users = _search_candidate_tickets(
-        subdomain, email, api_token, agent_email, start_dt, end_dt
-    )
+    candidates, search_users = _search_candidate_tickets(subdomain, email, api_token, agent_email, start_dt)
 
     matched = []
     for t in candidates:
