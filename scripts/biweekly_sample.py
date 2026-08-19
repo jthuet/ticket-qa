@@ -32,6 +32,12 @@ by a repo secret of the same name, so tracking a different agent later
 doesn't need a code change. The tab this writes to is named after the
 agent's email handle (the part before "@"), so switching agents starts a
 fresh tab rather than mixing tickets from two agents into one.
+
+Right after writing the QA Sample row, this also appends one rubric
+scoring block for John's ticket and one for Gabby's ticket onto their
+own "<handle>-john-rubrics" / "<handle>-gabby-rubrics" tabs (see
+scripts/rubrics.py) -- riding along on this script's own cursor, so it
+can't duplicate a block any more than the QA Sample row itself can.
 """
 import json
 import os
@@ -42,6 +48,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
 from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
+from rubrics import append_rubric_block  # noqa: E402
 
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
@@ -159,6 +166,11 @@ def main():
     ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
     append_rows(service, sheet_id, TAB_TITLE, [row])
     print(f"Appended QA sample row for window {window_start_date.isoformat()}..{today.isoformat()}.")
+
+    pull_date, john_link, gabby_link = row[0], row[1], row[2]
+    append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link)
+    append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link)
+    print(f"Appended rubric block(s) for {pull_date}.")
 
     state["last_window_end"] = today.isoformat()
     save_state(state)

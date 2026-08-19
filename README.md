@@ -23,6 +23,13 @@ growing Google Sheet:
    manually once) — does the same biweekly sample, but for every 2-week
    window from **2026-05-01 to 2026-08-14**, so the "QA Sample" tab starts
    with a full history instead of only rows going forward.
+4. **Rubric scoring blocks** — every time the biweekly job appends a QA
+   Sample row, it also appends one rubric-scoring block for John's ticket
+   onto the **"`<handle>`-john-rubrics"** tab, and one for Gabby's ticket
+   onto **"`<handle>`-gabby-rubrics"** (see "Rubric tabs" below).
+   `scripts/backfill_rubrics.py` (run manually once, after the historical
+   backfill) builds the same blocks for every pull date already sitting in
+   the QA Sample tab.
 
 Like the NotebookLM project, this is 100% deterministic (no LLM calls) —
 it only ever touches Zendesk's API and Google's Sheets API, using
@@ -90,7 +97,16 @@ every historical row (unlike the NotebookLM project's own `backfill.py`,
 which clears its target doc first specifically so it *can* be re-run
 freely).
 
-### 6. Turn on the weekly + biweekly workflows
+### 6. Run the one-time historical rubric build
+
+Once the QA Sample tab has its historical rows (step 5), go to the
+**Actions** tab → **"One-time historical rubric build"** → **Run
+workflow**. This reads every existing row out of the QA Sample tab and
+builds a rubric block for each on the john/gabby rubric tabs. Also
+**only run this once** — same reasoning as step 5, there's no cursor to
+dedupe against, so a second run would duplicate every block.
+
+### 7. Turn on the weekly + biweekly workflows
 
 Both are already scheduled — `weekly_log.yml` every Friday at 11pm ET
 (fires as 03:00 UTC Saturday, so during EST it lands at 10pm ET instead;
@@ -148,6 +164,30 @@ Status, `<handle>` Comment Date (e.g. "jbell Comment Date").
 Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
 Gabby Score, Gabby Notes. The four score/notes columns are left blank for
 you to fill in by hand — nothing writes to them automatically.
+
+## Rubric tabs
+
+`<handle>-john-rubrics` and `<handle>-gabby-rubrics` (e.g. `jbell-john-
+rubrics`) hold one 9-row scoring block per pull date, stacked top to
+bottom with a blank spacer row between blocks:
+
+| Row | A | B | C |
+|---|---|---|---|
+| 1 | Pull Date | Ticket Link | |
+| 2 | Metric | Description | Score (1 Major Miss - 4 Excellent) |
+| 3–6 | *(the 4 rubric metrics — see `scripts/rubrics.py`'s `RUBRIC_METRICS`)* | | *(blank, for the evaluator to fill in)* |
+| 7 | Total | | `=SUM(...)` over rows 3–6 — recalculates live as scores are filled in |
+| 8 | John Notes *(or Gabby Notes)* | *(blank, for the evaluator to fill in)* | |
+| 9 | *(blank spacer)* | | |
+
+Only columns A/B of row 1 and column C of rows 3–6 and row 8's column B
+are ever meant to be hand-edited — everything else is written once by the
+script and left alone. The 4 rubric metrics themselves (name + description
+in columns A/B of rows 3–6) live in `RUBRIC_METRICS` near the top of
+`scripts/rubrics.py` if the wording ever needs to change; note the
+"Evidence of investigation" description currently ends mid-sentence
+("...If the question was beyond the") — that's carried over verbatim from
+how the rubric was originally written, not a bug in this script.
 
 ## If a workflow fails on "Commit updated sync state" / "Commit seeded sample state"
 

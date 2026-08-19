@@ -38,16 +38,25 @@ def _existing_tab_titles(service, sheet_id):
     return {s["properties"]["title"] for s in meta.get("sheets", [])}
 
 
-def ensure_tab(service, sheet_id, tab_title, header):
-    """Create tab_title with the given header row if it doesn't already
-    exist. Safe to call on every run -- a no-op once the tab is there, so
-    callers don't need their own first-run bookkeeping for this."""
+def ensure_tab_exists(service, sheet_id, tab_title):
+    """Create tab_title (with no header row) if it doesn't already exist.
+    For tabs like the rubric tabs that don't have one fixed header row --
+    each rubric block carries its own headers further down the tab."""
     if tab_title in _existing_tab_titles(service, sheet_id):
         return
     service.spreadsheets().batchUpdate(
         spreadsheetId=sheet_id,
         body={"requests": [{"addSheet": {"properties": {"title": tab_title}}}]},
     ).execute()
+
+
+def ensure_tab(service, sheet_id, tab_title, header):
+    """Create tab_title with the given header row if it doesn't already
+    exist. Safe to call on every run -- a no-op once the tab is there, so
+    callers don't need their own first-run bookkeeping for this."""
+    if tab_title in _existing_tab_titles(service, sheet_id):
+        return
+    ensure_tab_exists(service, sheet_id, tab_title)
     service.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{tab_title}'!A1",
@@ -68,3 +77,11 @@ def append_rows(service, sheet_id, tab_title, rows):
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
     ).execute()
+
+
+def row_count(service, sheet_id, tab_title):
+    """Number of rows currently holding data in column A of tab_title --
+    used to compute where the NEXT appended row will land, e.g. so a
+    formula can reference exact cells instead of guessing."""
+    resp = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=f"'{tab_title}'!A:A").execute()
+    return len(resp.get("values", []))

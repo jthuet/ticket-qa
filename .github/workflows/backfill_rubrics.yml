@@ -1,0 +1,29 @@
+name: One-time historical rubric build
+
+on:
+  workflow_dispatch: {}   # manual only -- see scripts/backfill_rubrics.py's
+                           # docstring for why re-running this isn't safe
+                           # without clearing the rubric tabs first
+
+jobs:
+  backfill-rubrics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build rubric blocks from existing QA Sample rows
+        env:
+          PYTHONUNBUFFERED: "1"
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          TARGET_AGENT_EMAIL: ${{ secrets.TARGET_AGENT_EMAIL }}
+        run: python scripts/backfill_rubrics.py
