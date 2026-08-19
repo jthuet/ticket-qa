@@ -100,19 +100,20 @@ def build_rubric_block(start_row, pull_date, ticket_link, evaluator_name):
 
 
 def format_rubric_block(service, sheet_id, tab_title, start_row):
-    """Applies, in one batchUpdate: merges the Notes row's B/C cells into
-    one (so notes can be typed anywhere across that width and still land
-    in the same underlying cell); a light grey background on the header
-    row; an outline border from the header row through the Total row
+    """Applies: merges the Notes row's B/C cells into one (so notes can be
+    typed anywhere across that width and still land in the same
+    underlying cell); a light grey background on the header row; an
+    outline border from the header row through the Total row
     (deliberately excluding the Pull Date row and the Notes row); and
     text wrap across the whole block (so resizing a column once keeps
     every block readable).
 
-    The merge request runs FIRST and wrap LAST deliberately: merging a
-    range can reset formatting already applied to it, so setting wrap
-    before merging can silently get undone by the merge -- doing it in
-    this order guarantees wrap is the final word on the merged cell's
-    state, not the merge."""
+    This is TWO separate batchUpdate calls, not one, and that's
+    deliberate: the merge has to fully commit server-side before wrap is
+    applied, or wrap set on the not-yet-merged B/C cells doesn't reliably
+    stick to the resulting merged cell -- putting both in one batchUpdate
+    (even with the merge request listed first) wasn't enough to guarantee
+    that."""
     sheet_id_num = get_tab_id(service, sheet_id, tab_title)
     top = start_row - 1  # 0-indexed
     header_row_0 = top + HEADER_ROW_OFFSET
@@ -134,7 +135,7 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
             }
         }
 
-    requests = [
+    structural_requests = [
         # Merge the Notes row's B/C cells into one -- value lives in B afterward.
         {
             "mergeCells": {
@@ -168,11 +169,13 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
                 "right": _BORDER_STYLE,
             }
         },
-        # Wrap the whole block (Pull Date row through Notes row), 3 columns wide --
-        # applied LAST so it's guaranteed to stick on the now-merged Notes cell too.
-        repeat_cell(top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy"),
     ]
-    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
+    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": structural_requests}).execute()
+
+    # Wrap the whole block (Pull Date row through Notes row), 3 columns wide --
+    # a separate call, run only after the merge above has fully committed.
+    wrap_request = repeat_cell(top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy")
+    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [wrap_request]}).execute()
 
 
 def next_block_start_row(service, sheet_id, tab_title):

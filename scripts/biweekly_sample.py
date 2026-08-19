@@ -42,6 +42,13 @@ then writes the QA Sample row, then the rubric blocks themselves. Sheets
 keeps that formula reference live from then on: typing a score or note
 into the rubric tab shows up on QA Sample immediately, no sync script or
 extra scheduled run required.
+
+Two hidden helper columns (John/Gabby Rubric Row) record each pull's
+rubric-tab row, so scripts/qa_sample_highlight.py can highlight whichever
+ticket-link cell (John's/Gabby's Ticket Link, or one of the 4 Backups) is
+currently the one being scored -- an evaluator can swap a backup link
+into their rubric's row 1 in place of the originally assigned ticket, and
+the highlight follows that swap automatically.
 """
 import json
 import os
@@ -51,8 +58,16 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
-from sheets_writer import get_sheets_service, ensure_tab, row_count, set_columns_wrap, write_rows_at  # noqa: E402
+from sheets_writer import (  # noqa: E402
+    get_sheets_service,
+    ensure_tab,
+    hide_columns,
+    row_count,
+    set_columns_wrap,
+    write_rows_at,
+)
 from rubrics import append_rubric_block, next_block_start_row, rubric_formula_refs, rubric_tab_title  # noqa: E402
+from qa_sample_highlight import setup_highlight_rules  # noqa: E402
 
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
@@ -72,6 +87,8 @@ HEADER = [
     "John Notes",
     "Gabby Score",
     "Gabby Notes",
+    "John Rubric Row",  # hidden helper -- see qa_sample_highlight.py
+    "Gabby Rubric Row",  # hidden helper -- see qa_sample_highlight.py
 ]
 
 ET = ZoneInfo("America/New_York")
@@ -128,10 +145,12 @@ def row_for_window(subdomain, email, token, window_end_date, window_start_date):
         link("backup2"),
         link("backup3"),
         link("backup4"),
-        "",
-        "",
-        "",
-        "",
+        "",  # John Score -- filled in by main() with a live formula
+        "",  # John Notes -- filled in by main() with a live formula
+        "",  # Gabby Score -- filled in by main() with a live formula
+        "",  # Gabby Notes -- filled in by main() with a live formula
+        "",  # John Rubric Row (hidden helper) -- filled in by main()
+        "",  # Gabby Rubric Row (hidden helper) -- filled in by main()
     ]
     return row, picks["_population_size"]
 
@@ -146,6 +165,10 @@ def main():
     service = get_sheets_service()
     ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
     set_columns_wrap(service, sheet_id, TAB_TITLE, QA_SAMPLE_COLUMN_WRAPS)
+    hide_columns(service, sheet_id, TAB_TITLE, 11, 13)  # L:M, the rubric-row helper columns
+    setup_highlight_rules(
+        service, sheet_id, TAB_TITLE, rubric_tab_title(AGENT_HANDLE, "john"), rubric_tab_title(AGENT_HANDLE, "gabby")
+    )
 
     today = today_et()
     days_since_anchor = (today - ANCHOR_DATE).days
@@ -187,8 +210,10 @@ def main():
     gabby_start = next_block_start_row(service, sheet_id, gabby_tab) if gabby_link else None
     if john_start:
         row[7], row[8] = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
+        row[11] = john_start
     if gabby_start:
         row[9], row[10] = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
+        row[12] = gabby_start
 
     qa_row = row_count(service, sheet_id, TAB_TITLE) + 1
     write_rows_at(service, sheet_id, TAB_TITLE, qa_row, [row])

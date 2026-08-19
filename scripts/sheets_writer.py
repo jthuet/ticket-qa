@@ -167,3 +167,28 @@ def set_columns_wrap(service, sheet_id, tab_title, column_wraps):
         for start_col_idx, end_col_idx_excl, wrap in column_wraps
     ]
     service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
+
+
+def hide_columns(service, sheet_id, tab_title, start_col_idx, end_col_idx_excl):
+    """Hides the given 0-indexed column range (e.g. helper columns not
+    meant for a human to look at). Safe to call on every run -- idempotent."""
+    sheet_id_num = get_tab_id(service, sheet_id, tab_title)
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={
+            "requests": [
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id_num,
+                            "dimension": "COLUMNS",
+                            "startIndex": start_col_idx,
+                            "endIndex": end_col_idx_excl,
+                        },
+                        "properties": {"hiddenByUser": True},
+                        "fields": "hiddenByUser",
+                    }
+                }
+            ]
+        },
+    ).execute()

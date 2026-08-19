@@ -108,12 +108,14 @@ dedupe against, so a second run would duplicate every block.
 
 **If you already ran this before the rubric layout changed** (Notes label
 in column B instead of A, B/C not merged, no borders/shading/wrap, no gap
-row between blocks, or QA Sample's Score/Notes cells holding plain values
-instead of live formulas): those old blocks won't fix themselves — clear
-all rows (and any merges — clearing rows alone doesn't undo a merge) out
-of both `<handle>-john-rubrics` and `<handle>-gabby-rubrics`, and clear
-the existing values out of QA Sample's Score/Notes columns (H–K) too,
-then re-run this workflow to rebuild everything in the current format.
+row between blocks, wrap not sticking on the merged Notes cell, or QA
+Sample's Score/Notes cells holding plain values instead of live formulas,
+or missing the hidden John/Gabby Rubric Row helper columns and ticket-link
+highlighting): those old blocks won't fix themselves — clear all rows
+(and any merges — clearing rows alone doesn't undo a merge) out of both
+`<handle>-john-rubrics` and `<handle>-gabby-rubrics`, and clear the
+existing values out of QA Sample's Score/Notes columns (H–K) too, then
+re-run this workflow to rebuild everything in the current format.
 
 ### 7. Turn on the weekly + biweekly workflows
 
@@ -171,13 +173,16 @@ Status, `<handle>` Comment Date (e.g. "jbell Comment Date").
 
 **QA Sample:** Pull Date, John's Ticket Link, Gabby's Ticket Link, Backup 1
 Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
-Gabby Score, Gabby Notes. The four Score/Notes cells (H–K) aren't static
-values — each is a live formula pointing at that pull's rubric block (e.g.
-`='jbell-john-rubrics'!C7`), so scoring or typing a note on the rubric tab
-shows up here immediately (see "Rubric tabs" → "Live link to QA Sample"
-below). The two Score columns (H, J) are set to never wrap; the two Notes
-columns (I, K) wrap (widen those two columns by hand to taste — the wrap
-setting alone doesn't resize anything).
+Gabby Score, Gabby Notes, John Rubric Row, Gabby Rubric Row. The four
+Score/Notes cells (H–K) aren't static values — each is a live formula
+pointing at that pull's rubric block (e.g. `='jbell-john-rubrics'!C7`), so
+scoring or typing a note on the rubric tab shows up here immediately (see
+"Rubric tabs" → "Live link to QA Sample" below). The two Score columns
+(H, J) are set to never wrap; the two Notes columns (I, K) wrap (widen
+those two columns by hand to taste — the wrap setting alone doesn't
+resize anything). The last two columns (L, M) are hidden helpers, not
+meant to be looked at — see "Rubric tabs" → "Highlighting the ticket
+actually being scored" below.
 
 ## Rubric tabs
 
@@ -211,10 +216,33 @@ Each block also gets formatting applied automatically: the header row
 (row 2) has a light grey background; an outline border runs around rows
 2–7 (header through Total — deliberately not the Pull Date row or the
 Notes row); every cell in the block wraps text, including the merged
-Notes cell, so resizing a column once makes every block readable. (The
-Notes cell's merge is applied *before* wrap in the same batchUpdate --
-merging a range can reset formatting already on it, so setting wrap
-first can silently get undone by the merge.)
+Notes cell, so resizing a column once makes every block readable. The
+merge, background, and border are applied in one batchUpdate call, and
+wrap in a *separate*, later call — merging a range can reset formatting
+already applied to it, so wrap needs the merge to be fully committed
+first, not just listed earlier in the same request.
+
+### Highlighting the ticket actually being scored
+
+If an evaluator decides the originally assigned ticket isn't suitable to
+score, they can replace it by editing the rubric tab's own row 1, column
+B (the Ticket Link cell) — typing over it with one of the 4 backup links
+instead. To make it obvious, on QA Sample, which of the 6 candidate
+ticket-link cells (John's/Gabby's Ticket Link, or Backup 1–4) is the one
+actually being scored right now, that cell is highlighted: **yellow** for
+whichever one John is using, **light purple** for Gabby's.
+
+This is conditional formatting (`scripts/qa_sample_highlight.py`), not a
+one-time paint job — it re-evaluates live, so replacing the link in the
+rubric tab moves the highlight to the new cell automatically. It works
+by looking up, for each QA Sample row, the *current* value of that row's
+rubric Ticket Link cell (via the hidden John/Gabby Rubric Row helper
+columns) and highlighting whichever of the 6 candidate cells currently
+matches it.
+
+**Edge case:** if John and Gabby both ended up using the exact same
+backup ticket for the same pull (unlikely, but not impossible), only one
+color wins on that shared cell — John's rule has priority.
 
 ### Live link to QA Sample
 

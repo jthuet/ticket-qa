@@ -11,6 +11,11 @@ at the block it just built, exactly like scripts/biweekly_sample.py does
 for new rows going forward. From then on, typing a score or note into a
 rubric tab shows up on QA Sample immediately -- no sync script involved.
 
+Also writes each row's rubric-tab row number into the hidden John/Gabby
+Rubric Row helper columns (L/M) and (re)creates the highlight rules on
+QA Sample (see scripts/qa_sample_highlight.py) that mark whichever
+ticket-link cell is the one currently being scored.
+
 Doesn't touch Zendesk at all -- it works entirely off what's already in
 the QA Sample tab (Pull Date, John's Ticket Link, Gabby's Ticket Link
 columns), so it reflects whatever's actually there, including the results
@@ -34,7 +39,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from rubrics import append_rubric_block, next_block_start_row, rubric_formula_refs, rubric_tab_title  # noqa: E402
-from sheets_writer import get_sheets_service, set_columns_wrap, write_cells  # noqa: E402
+from sheets_writer import get_sheets_service, hide_columns, set_columns_wrap, write_cells  # noqa: E402
+from qa_sample_highlight import setup_highlight_rules  # noqa: E402
 
 # 0-indexed columns: H=7 John Score, I=8 John Notes, J=9 Gabby Score,
 # K=10 Gabby Notes. Scores stay unwrapped (short numbers); notes wrap.
@@ -77,18 +83,28 @@ def main():
         if john_link:
             john_start = next_block_start_row(service, sheet_id, john_tab)
             score_formula, notes_formula = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
-            cell_updates += [(QA_SAMPLE_TAB, f"H{qa_row}", score_formula), (QA_SAMPLE_TAB, f"I{qa_row}", notes_formula)]
+            cell_updates += [
+                (QA_SAMPLE_TAB, f"H{qa_row}", score_formula),
+                (QA_SAMPLE_TAB, f"I{qa_row}", notes_formula),
+                (QA_SAMPLE_TAB, f"L{qa_row}", john_start),
+            ]
             append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
         if gabby_link:
             gabby_start = next_block_start_row(service, sheet_id, gabby_tab)
             score_formula, notes_formula = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
-            cell_updates += [(QA_SAMPLE_TAB, f"J{qa_row}", score_formula), (QA_SAMPLE_TAB, f"K{qa_row}", notes_formula)]
+            cell_updates += [
+                (QA_SAMPLE_TAB, f"J{qa_row}", score_formula),
+                (QA_SAMPLE_TAB, f"K{qa_row}", notes_formula),
+                (QA_SAMPLE_TAB, f"M{qa_row}", gabby_start),
+            ]
             append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
 
         write_cells(service, sheet_id, cell_updates)
         built += 1
 
     set_columns_wrap(service, sheet_id, QA_SAMPLE_TAB, QA_SAMPLE_COLUMN_WRAPS)
+    hide_columns(service, sheet_id, QA_SAMPLE_TAB, 11, 13)  # L:M, the rubric-row helper columns
+    setup_highlight_rules(service, sheet_id, QA_SAMPLE_TAB, john_tab, gabby_tab)
     print(f"Built rubric blocks for {built} pull date(s) from '{QA_SAMPLE_TAB}'.")
 
 
