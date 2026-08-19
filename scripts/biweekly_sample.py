@@ -38,6 +38,12 @@ scoring block for John's ticket and one for Gabby's ticket onto their
 own "<handle>-john-rubrics" / "<handle>-gabby-rubrics" tabs (see
 scripts/rubrics.py) -- riding along on this script's own cursor, so it
 can't duplicate a block any more than the QA Sample row itself can.
+
+Every run (not just an actual sampling week) also syncs any completed
+rubric Totals/Notes into the QA Sample tab's John/Gabby Score/Notes
+columns (see scripts/rubric_sync.py), so a score an evaluator finishes
+gets picked up within a few days rather than waiting for the next
+2-week sampling cycle.
 """
 import json
 import os
@@ -47,8 +53,9 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
-from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
+from sheets_writer import get_sheets_service, ensure_tab, append_rows, set_columns_no_wrap  # noqa: E402
 from rubrics import append_rubric_block  # noqa: E402
+from rubric_sync import sync_completed_scores  # noqa: E402
 
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
@@ -132,7 +139,23 @@ def row_for_window(subdomain, email, token, window_end_date, window_start_date):
     return row, picks["_population_size"]
 
 
+# 0-indexed columns H:K -- John Score, John Notes, Gabby Score, Gabby Notes.
+NO_WRAP_COLUMNS = (7, 11)
+
+
 def main():
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    service = get_sheets_service()
+    ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
+    set_columns_no_wrap(service, sheet_id, TAB_TITLE, *NO_WRAP_COLUMNS)
+
+    # Runs every Friday regardless of whether today is an actual sampling
+    # date, so a score/notes entry an evaluator just finished doesn't have
+    # to wait for the next 2-week cycle to show up in the QA Sample tab.
+    synced = sync_completed_scores(service, sheet_id, AGENT_HANDLE, TAB_TITLE)
+    if synced:
+        print(f"Synced {synced} completed rubric score/notes value(s) into '{TAB_TITLE}'.")
+
     today = today_et()
     days_since_anchor = (today - ANCHOR_DATE).days
     if days_since_anchor < 0 or days_since_anchor % WINDOW_DAYS != 0:
@@ -153,7 +176,6 @@ def main():
     subdomain = os.environ["ZENDESK_SUBDOMAIN"]
     email = os.environ["ZENDESK_EMAIL"]
     token = os.environ["ZENDESK_API_TOKEN"]
-    sheet_id = os.environ["GOOGLE_SHEET_ID"]
 
     row, population_size = row_for_window(subdomain, email, token, today, window_start_date)
     if population_size < len(SLOTS):
@@ -162,8 +184,6 @@ def main():
             f"{window_start_date.isoformat()}..{today.isoformat()} -- filled as many slots as available."
         )
 
-    service = get_sheets_service()
-    ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
     append_rows(service, sheet_id, TAB_TITLE, [row])
     print(f"Appended QA sample row for window {window_start_date.isoformat()}..{today.isoformat()}.")
 

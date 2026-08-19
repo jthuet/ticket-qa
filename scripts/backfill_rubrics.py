@@ -30,7 +30,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from rubrics import append_rubric_block  # noqa: E402
-from sheets_writer import get_sheets_service  # noqa: E402
+from sheets_writer import get_sheets_service, set_columns_no_wrap  # noqa: E402
+
+# 0-indexed columns H:K -- John Score, John Notes, Gabby Score, Gabby Notes.
+NO_WRAP_COLUMNS = (7, 11)
 
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
@@ -64,6 +67,7 @@ def main():
         append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link)
         built += 1
 
+    set_columns_no_wrap(service, sheet_id, QA_SAMPLE_TAB, *NO_WRAP_COLUMNS)
     print(f"Built rubric blocks for {built} pull date(s) from '{QA_SAMPLE_TAB}'.")
 
 

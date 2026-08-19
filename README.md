@@ -106,6 +106,12 @@ builds a rubric block for each on the john/gabby rubric tabs. Also
 **only run this once** — same reasoning as step 5, there's no cursor to
 dedupe against, so a second run would duplicate every block.
 
+**If you already ran this before the rubric layout changed** (Notes in
+column B instead of C, no borders/shading/wrap, no gap row between
+blocks): those old blocks won't fix themselves — clear all rows out of
+both `<handle>-john-rubrics` and `<handle>-gabby-rubrics` first, then
+re-run this workflow to rebuild them in the current format.
+
 ### 7. Turn on the weekly + biweekly workflows
 
 Both are already scheduled — `weekly_log.yml` every Friday at 11pm ET
@@ -162,29 +168,59 @@ Status, `<handle>` Comment Date (e.g. "jbell Comment Date").
 
 **QA Sample:** Pull Date, John's Ticket Link, Gabby's Ticket Link, Backup 1
 Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
-Gabby Score, Gabby Notes. The four score/notes columns are left blank for
-you to fill in by hand — nothing writes to them automatically.
+Gabby Score, Gabby Notes. Score/Notes columns (H–K) are left blank for you
+to fill in by hand — until each rubric block is scored, at which point
+`scripts/rubric_sync.py` copies the rubric's Total/Notes over automatically
+(see "Rubric tabs" → "Syncing back to QA Sample" below). Those four
+columns are set to never wrap, regardless of content length.
 
 ## Rubric tabs
 
 `<handle>-john-rubrics` and `<handle>-gabby-rubrics` (e.g. `jbell-john-
-rubrics`) hold one 9-row scoring block per pull date, stacked top to
-bottom with a blank spacer row between blocks:
+rubrics`) hold one 8-row scoring block per pull date, stacked top to
+bottom with one blank row left as a gap before the next block (that gap
+row is never written to — it's just left alone, not literally written as
+empty):
 
 | Row | A | B | C |
 |---|---|---|---|
 | 1 | Pull Date | Ticket Link | |
 | 2 | Metric | Description | Score (1 Major Miss - 4 Excellent) |
 | 3–6 | *(the 4 rubric metrics — see `scripts/rubrics.py`'s `RUBRIC_METRICS`)* | | *(blank, for the evaluator to fill in)* |
-| 7 | Total | | `=SUM(...)` over rows 3–6 — recalculates live as scores are filled in |
-| 8 | John Notes *(or Gabby Notes)* | *(blank, for the evaluator to fill in)* | |
-| 9 | *(blank spacer)* | | |
+| 7 | | Total | `=SUM(C3:C6)` — recalculates live as scores are filled in |
+| 8 | | John Notes *(or Gabby Notes)* | *(blank, for the evaluator to fill in)* |
+| 9 | *(blank gap before the next block)* | | |
 
-Only columns A/B of row 1 and column C of rows 3–6 and row 8's column B
-are ever meant to be hand-edited — everything else is written once by the
-script and left alone. The 4 rubric metrics themselves (name + description
-in columns A/B of rows 3–6) live in `RUBRIC_METRICS` near the top of
+"Total" and the Notes label sit in column B rather than A specifically so
+it's clear both results (the sum, and the notes text) land in column C.
+Only column C of rows 3–6, row 8's column C, and row 1's A/B are ever
+meant to be hand-edited — everything else is written once by the script
+and left alone. The 4 rubric metrics themselves (name + description in
+columns A/B of rows 3–6) live in `RUBRIC_METRICS` near the top of
 `scripts/rubrics.py` if the wording ever needs to change.
+
+Each block also gets formatting applied automatically: the header row
+(row 2) has a light grey background; an outline border runs around rows
+2–7 (header through Total — deliberately not the Pull Date row or the
+Notes row); every cell in the block wraps text (so resizing a column once
+makes every block readable) **except** the Notes value cell (row 8,
+column C), which is left unwrapped on purpose.
+
+### Syncing back to QA Sample
+
+Every time `scripts/biweekly_sample.py` runs (every Friday, not only an
+actual sampling week), it also calls `scripts/rubric_sync.py`, which reads
+every rubric block's Total and Notes and copies them into the matching QA
+Sample row (matched by Pull Date): a block's Total → John/Gabby Score, a
+block's Notes → John/Gabby Notes. A Total only copies over if it's a real
+number; Notes only copy over if non-empty.
+
+**Caveat:** a block's Total is a live `=SUM()` over 4 cells, and `SUM()`
+treats blank cells as 0 — so a ticket only partially scored so far (say
+1 of 4 metrics filled in) already has a non-blank, numeric Total, and it
+*will* get synced as though scoring were complete. There's no way to tell
+"genuinely scored a 0" apart from "not scored yet" from the Total alone
+under the current setup.
 
 ## If a workflow fails on "Commit updated sync state" / "Commit seeded sample state"
 
