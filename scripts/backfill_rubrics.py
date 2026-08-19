@@ -39,7 +39,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from rubrics import append_rubric_block, next_block_start_row, rubric_formula_refs, rubric_tab_title  # noqa: E402
-from sheets_writer import get_sheets_service, hide_columns, set_columns_wrap, write_cells  # noqa: E402
+from sheets_writer import get_sheets_service, SheetsClient  # noqa: E402
 from qa_sample_highlight import setup_highlight_rules  # noqa: E402
 
 # 0-indexed columns: H=7 John Score, I=8 John Notes, J=9 Gabby Score,
@@ -56,13 +56,15 @@ QA_SAMPLE_TAB = f"{AGENT_HANDLE} QA Sample"
 
 def main():
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    service = get_sheets_service()
+    client = SheetsClient(get_sheets_service(), sheet_id)
 
     # A2:C skips the header row and only needs Pull Date/John's Ticket
     # Link/Gabby's Ticket Link -- the backup and score/notes columns don't
-    # matter here.
-    resp = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=f"'{QA_SAMPLE_TAB}'!A2:C").execute()
-    rows = resp.get("values", [])
+    # matter here. This is also the only read of QA_SAMPLE_TAB's row
+    # count this script needs -- seed the client's cache from it instead
+    # of letting a later row_count() call re-read the same tab.
+    rows = client.get_values(QA_SAMPLE_TAB, "A2:C")
+    client.seed_row_count(QA_SAMPLE_TAB, len(rows) + 1)  # +1 for the header row this range skipped
     if not rows:
         print(f"No data rows found in '{QA_SAMPLE_TAB}' -- nothing to build rubrics from.")
         return
@@ -71,6 +73,7 @@ def main():
     gabby_tab = rubric_tab_title(AGENT_HANDLE, "gabby")
 
     built = 0
+    all_cell_updates = []
     for idx, row in enumerate(rows):
         qa_row = idx + 2  # +2: 1-indexed, plus the header row this range skipped
         pull_date = row[0] if len(row) > 0 else ""
@@ -79,32 +82,33 @@ def main():
         if not pull_date:
             continue
 
-        cell_updates = []
         if john_link:
-            john_start = next_block_start_row(service, sheet_id, john_tab)
+            john_start = next_block_start_row(client, john_tab)
             score_formula, notes_formula = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
-            cell_updates += [
+            all_cell_updates += [
                 (QA_SAMPLE_TAB, f"H{qa_row}", score_formula),
                 (QA_SAMPLE_TAB, f"I{qa_row}", notes_formula),
                 (QA_SAMPLE_TAB, f"L{qa_row}", john_start),
             ]
-            append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
+            append_rubric_block(client, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
         if gabby_link:
-            gabby_start = next_block_start_row(service, sheet_id, gabby_tab)
+            gabby_start = next_block_start_row(client, gabby_tab)
             score_formula, notes_formula = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
-            cell_updates += [
+            all_cell_updates += [
                 (QA_SAMPLE_TAB, f"J{qa_row}", score_formula),
                 (QA_SAMPLE_TAB, f"K{qa_row}", notes_formula),
                 (QA_SAMPLE_TAB, f"M{qa_row}", gabby_start),
             ]
-            append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
+            append_rubric_block(client, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
 
-        write_cells(service, sheet_id, cell_updates)
         built += 1
 
-    set_columns_wrap(service, sheet_id, QA_SAMPLE_TAB, QA_SAMPLE_COLUMN_WRAPS)
-    hide_columns(service, sheet_id, QA_SAMPLE_TAB, 11, 13)  # L:M, the rubric-row helper columns
-    setup_highlight_rules(service, sheet_id, QA_SAMPLE_TAB, john_tab, gabby_tab)
+    # One batchUpdate for every row's formula/helper cells, not one per row.
+    client.write_cells(all_cell_updates)
+
+    client.set_columns_wrap(QA_SAMPLE_TAB, QA_SAMPLE_COLUMN_WRAPS)
+    client.hide_columns(QA_SAMPLE_TAB, 11, 13)  # L:M, the rubric-row helper columns
+    setup_highlight_rules(client, QA_SAMPLE_TAB, john_tab, gabby_tab)
     print(f"Built rubric blocks for {built} pull date(s) from '{QA_SAMPLE_TAB}'.")
 
 

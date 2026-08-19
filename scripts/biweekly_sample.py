@@ -58,14 +58,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
-from sheets_writer import (  # noqa: E402
-    get_sheets_service,
-    ensure_tab,
-    hide_columns,
-    row_count,
-    set_columns_wrap,
-    write_rows_at,
-)
+from sheets_writer import get_sheets_service, SheetsClient  # noqa: E402
 from rubrics import append_rubric_block, next_block_start_row, rubric_formula_refs, rubric_tab_title  # noqa: E402
 from qa_sample_highlight import setup_highlight_rules  # noqa: E402
 
@@ -162,12 +155,12 @@ QA_SAMPLE_COLUMN_WRAPS = [(7, 8, False), (8, 9, True), (9, 10, False), (10, 11, 
 
 def main():
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    service = get_sheets_service()
-    ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
-    set_columns_wrap(service, sheet_id, TAB_TITLE, QA_SAMPLE_COLUMN_WRAPS)
-    hide_columns(service, sheet_id, TAB_TITLE, 11, 13)  # L:M, the rubric-row helper columns
+    client = SheetsClient(get_sheets_service(), sheet_id)
+    client.ensure_tab(TAB_TITLE, HEADER)
+    client.set_columns_wrap(TAB_TITLE, QA_SAMPLE_COLUMN_WRAPS)
+    client.hide_columns(TAB_TITLE, 11, 13)  # L:M, the rubric-row helper columns
     setup_highlight_rules(
-        service, sheet_id, TAB_TITLE, rubric_tab_title(AGENT_HANDLE, "john"), rubric_tab_title(AGENT_HANDLE, "gabby")
+        client, TAB_TITLE, rubric_tab_title(AGENT_HANDLE, "john"), rubric_tab_title(AGENT_HANDLE, "gabby")
     )
 
     today = today_et()
@@ -206,8 +199,8 @@ def main():
     # step would need to fill in.
     john_tab = rubric_tab_title(AGENT_HANDLE, "john")
     gabby_tab = rubric_tab_title(AGENT_HANDLE, "gabby")
-    john_start = next_block_start_row(service, sheet_id, john_tab) if john_link else None
-    gabby_start = next_block_start_row(service, sheet_id, gabby_tab) if gabby_link else None
+    john_start = next_block_start_row(client, john_tab) if john_link else None
+    gabby_start = next_block_start_row(client, gabby_tab) if gabby_link else None
     if john_start:
         row[7], row[8] = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
         row[11] = john_start
@@ -215,12 +208,12 @@ def main():
         row[9], row[10] = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
         row[12] = gabby_start
 
-    qa_row = row_count(service, sheet_id, TAB_TITLE) + 1
-    write_rows_at(service, sheet_id, TAB_TITLE, qa_row, [row])
+    qa_row = client.row_count(TAB_TITLE) + 1
+    client.write_rows_at(TAB_TITLE, qa_row, [row])
     print(f"Appended QA sample row for window {window_start_date.isoformat()}..{today.isoformat()}.")
 
-    append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
-    append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
+    append_rubric_block(client, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
+    append_rubric_block(client, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
     print(f"Appended rubric block(s) for {pull_date}.")
 
     state["last_window_end"] = today.isoformat()

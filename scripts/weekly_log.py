@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 from zendesk_client import find_tickets_with_public_comment  # noqa: E402
-from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
+from sheets_writer import get_sheets_service, SheetsClient  # noqa: E402
 
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
@@ -88,9 +88,9 @@ def main():
             [week_ending, t["id"], t["link"], t["subject"], t["requester"], t["status"], t["comment_date"]]
             for t in sorted(tickets, key=lambda t: t["comment_date"])
         ]
-        service = get_sheets_service()
-        ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
-        append_rows(service, sheet_id, TAB_TITLE, rows)
+        client = SheetsClient(get_sheets_service(), sheet_id)
+        client.ensure_tab(TAB_TITLE, HEADER)
+        client.append_rows(TAB_TITLE, rows)
         print(f"Appended {len(rows)} ticket(s) to '{TAB_TITLE}'.")
     else:
         print(f"No tickets with a new public {AGENT_HANDLE} comment since last sync.")

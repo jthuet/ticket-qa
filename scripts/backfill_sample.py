@@ -29,7 +29,7 @@ from datetime import date, timedelta
 sys.path.insert(0, os.path.dirname(__file__))
 from biweekly_sample import row_for_window, HEADER, TAB_TITLE, ANCHOR_DATE, save_state  # noqa: E402
 from sampling import SLOTS  # noqa: E402
-from sheets_writer import get_sheets_service, ensure_tab, append_rows  # noqa: E402
+from sheets_writer import get_sheets_service, SheetsClient  # noqa: E402
 
 RANGE_START = date(2026, 5, 1)
 ANCHOR_END = ANCHOR_DATE  # 2026-08-14
@@ -60,8 +60,8 @@ def main():
     windows = build_windows()
     print(f"Backfilling {len(windows)} window(s) from {windows[0][0]} to {windows[-1][1]}...")
 
-    service = get_sheets_service()
-    ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
+    client = SheetsClient(get_sheets_service(), sheet_id)
+    client.ensure_tab(TAB_TITLE, HEADER)
 
     rows = []
     for window_start, window_end in windows:
@@ -72,7 +72,7 @@ def main():
             print(f"  {window_start}..{window_end}: {population_size} qualifying ticket(s).")
         rows.append(row)
 
-    append_rows(service, sheet_id, TAB_TITLE, rows)
+    client.append_rows(TAB_TITLE, rows)
     print(f"Appended {len(rows)} historical row(s) to '{TAB_TITLE}'.")
 
     save_state({"last_window_end": ANCHOR_END.isoformat()})

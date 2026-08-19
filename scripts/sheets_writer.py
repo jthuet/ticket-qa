@@ -2,9 +2,25 @@
 """
 sheets_writer.py
 
-Shared helper for appending rows to a named tab of a single target Google
-Sheet (GOOGLE_SHEET_ID), creating the tab with a header row on first use if
-it doesn't exist yet.
+SheetsClient: a thin wrapper around the Sheets API for one target Google
+Sheet (GOOGLE_SHEET_ID), used by every script in this repo instead of
+passing a raw (service, sheet_id) pair around everywhere. Two things it
+buys over that:
+
+1. Caching. Sheets' default quota is a tight 60 read requests/minute/user
+   -- a naive implementation that re-fetches a tab's metadata or row
+   count every time it's needed (once per rubric block, twice a run per
+   evaluator, times however many historical rows a backfill covers) blows
+   past that quickly and the run dies with a 429. SheetsClient instead
+   fetches spreadsheet metadata (tab titles/IDs/conditional formats) and
+   each tab's row count AT MOST ONCE per script run, and updates its own
+   cache locally afterward -- e.g. creating a tab or writing rows updates
+   the cache from the API response it already got back, no extra read.
+2. Retry-with-backoff on rate-limit errors (429 / RATE_LIMIT_EXCEEDED /
+   RESOURCE_EXHAUSTED) for every call, same idea as the NotebookLM
+   project's Slack rate-limit retry in sync_to_notebooklm.py -- caching
+   makes hitting the limit unlikely, but not impossible (e.g. running two
+   scripts back to back), so this is a safety net, not the fix itself.
 
 Unlike the NotebookLM project's Google Docs pool (MultiDocWriter, needed
 because a single Doc caps out around ~1,024,000 characters), this targets
@@ -19,11 +35,19 @@ Required environment variable:
 """
 import json
 import os
+import sys
+import time
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+MAX_RATE_LIMIT_RETRIES = 6
+RATE_LIMIT_BASE_WAIT = 15  # seconds; Sheets' per-minute quotas are a rolling
+                           # window, so a short exponential backoff isn't
+                           # enough -- this needs to be patient, not quick.
 
 
 def get_sheets_service():
@@ -33,162 +57,261 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
-def _tab_metadata(service, sheet_id):
-    """{title: numeric sheetId} for every tab in the spreadsheet."""
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
-    return {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta.get("sheets", [])}
+def _is_rate_limit_error(e):
+    return isinstance(e, HttpError) and (
+        e.resp.status == 429 or "RATE_LIMIT_EXCEEDED" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+    )
 
 
-def _existing_tab_titles(service, sheet_id):
-    return set(_tab_metadata(service, sheet_id))
+def _execute_with_retry(request):
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES:
+                raise
+            wait = RATE_LIMIT_BASE_WAIT * (attempt + 1)
+            print(
+                f"Sheets API rate-limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
+                f"retrying in {wait}s...",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
 
 
-def tab_exists(service, sheet_id, tab_title):
-    return tab_title in _existing_tab_titles(service, sheet_id)
+class SheetsClient:
+    def __init__(self, service, sheet_id):
+        self.service = service
+        self.sheet_id = sheet_id
+        self._sheets_meta = None  # list of "sheets" entries from spreadsheets().get(), lazily loaded
+        self._row_counts = {}  # {tab_title: last known row count}
 
+    # -- metadata (tab IDs, conditional formats) --------------------------
 
-def get_tab_id(service, sheet_id, tab_title):
-    """Numeric sheetId for tab_title -- needed for formatting requests
-    (repeatCell, updateBorders), which address tabs by this ID, not by
-    title. Raises KeyError if the tab doesn't exist."""
-    return _tab_metadata(service, sheet_id)[tab_title]
+    def _load_meta(self):
+        if self._sheets_meta is None:
+            resp = _execute_with_retry(self.service.spreadsheets().get(spreadsheetId=self.sheet_id))
+            self._sheets_meta = resp.get("sheets", [])
+        return self._sheets_meta
 
+    def _find(self, tab_title):
+        for s in self._load_meta():
+            if s["properties"]["title"] == tab_title:
+                return s
+        return None
 
-def ensure_tab_exists(service, sheet_id, tab_title):
-    """Create tab_title (with no header row) if it doesn't already exist.
-    For tabs like the rubric tabs that don't have one fixed header row --
-    each rubric block carries its own headers further down the tab."""
-    if tab_title in _existing_tab_titles(service, sheet_id):
-        return
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=sheet_id,
-        body={"requests": [{"addSheet": {"properties": {"title": tab_title}}}]},
-    ).execute()
+    def tab_exists(self, tab_title):
+        return self._find(tab_title) is not None
 
+    def get_tab_id(self, tab_title):
+        """Numeric sheetId for tab_title -- needed for formatting requests
+        (repeatCell, updateBorders), which address tabs by this ID, not by
+        title. Raises KeyError if the tab doesn't exist."""
+        s = self._find(tab_title)
+        if s is None:
+            raise KeyError(tab_title)
+        return s["properties"]["sheetId"]
 
-def ensure_tab(service, sheet_id, tab_title, header):
-    """Create tab_title with the given header row if it doesn't already
-    exist. Safe to call on every run -- a no-op once the tab is there, so
-    callers don't need their own first-run bookkeeping for this."""
-    if tab_title in _existing_tab_titles(service, sheet_id):
-        return
-    ensure_tab_exists(service, sheet_id, tab_title)
-    service.spreadsheets().values().update(
-        spreadsheetId=sheet_id,
-        range=f"'{tab_title}'!A1",
-        valueInputOption="RAW",
-        body={"values": [header]},
-    ).execute()
+    def conditional_format_count(self, tab_title):
+        s = self._find(tab_title)
+        return len(s.get("conditionalFormats", [])) if s else 0
 
+    def ensure_tab_exists(self, tab_title):
+        """Create tab_title (with no header row) if it doesn't already
+        exist. For tabs like the rubric tabs that don't have one fixed
+        header row -- each rubric block carries its own headers further
+        down the tab."""
+        if self.tab_exists(tab_title):
+            return
+        resp = _execute_with_retry(
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.sheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": tab_title}}}]},
+            )
+        )
+        new_props = resp["replies"][0]["addSheet"]["properties"]
+        self._sheets_meta.append({"properties": new_props})
 
-def append_rows(service, sheet_id, tab_title, rows):
-    """Append rows (a list of lists) after the tab's current last row.
-    No-op if rows is empty.
+    def ensure_tab(self, tab_title, header):
+        """Create tab_title with the given header row if it doesn't
+        already exist. Safe to call on every run -- a no-op once the tab
+        is there, so callers don't need their own first-run bookkeeping
+        for this."""
+        if self.tab_exists(tab_title):
+            return
+        self.ensure_tab_exists(tab_title)
+        _execute_with_retry(
+            self.service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=self.sheet_id,
+                range=f"'{tab_title}'!A1",
+                valueInputOption="RAW",
+                body={"values": [header]},
+            )
+        )
+        self._row_counts[tab_title] = 1
 
-    Caution: this uses the Sheets API's own "find the table and append
-    after it" heuristic (values.append), which can misplace data if the
-    tab's last row is intentionally blank (a spacer) -- the heuristic can
-    treat that blank row as the end of the table and write new data
-    INTO it rather than after it. Use write_rows_at() instead whenever
-    the exact target row matters, e.g. content with deliberate blank
-    rows built in (see scripts/rubrics.py)."""
-    if not rows:
-        return
-    service.spreadsheets().values().append(
-        spreadsheetId=sheet_id,
-        range=f"'{tab_title}'!A:A",
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": rows},
-    ).execute()
+    # -- rows/cells --------------------------------------------------------
 
+    def append_rows(self, tab_title, rows):
+        """Append rows (a list of lists) after the tab's current last row.
+        No-op if rows is empty.
 
-def write_rows_at(service, sheet_id, tab_title, start_row, rows):
-    """Write rows (a list of lists) starting at the given 1-indexed row,
-    via an explicit range update. Unlike append_rows(), this never has to
-    guess where "the table" ends, so it can't misplace data into a
-    deliberately blank row. No-op if rows is empty."""
-    if not rows:
-        return
-    end_row = start_row + len(rows) - 1
-    end_col = chr(ord("A") + max(len(r) for r in rows) - 1) if rows else "A"
-    service.spreadsheets().values().update(
-        spreadsheetId=sheet_id,
-        range=f"'{tab_title}'!A{start_row}:{end_col}{end_row}",
-        valueInputOption="USER_ENTERED",
-        body={"values": rows},
-    ).execute()
+        Caution: this uses the Sheets API's own "find the table and
+        append after it" heuristic (values.append), which can misplace
+        data if the tab's last row is intentionally blank (a spacer) --
+        the heuristic can treat that blank row as the end of the table
+        and write new data INTO it rather than after it. Use
+        write_rows_at() instead whenever the exact target row matters,
+        e.g. content with deliberate blank rows built in (see
+        scripts/rubrics.py). Invalidates any cached row count for this
+        tab (this call's own row target isn't knowable without another
+        read, so the safest thing is to just forget the cached count)."""
+        if not rows:
+            return
+        _execute_with_retry(
+            self.service.spreadsheets()
+            .values()
+            .append(
+                spreadsheetId=self.sheet_id,
+                range=f"'{tab_title}'!A:A",
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body={"values": rows},
+            )
+        )
+        self._row_counts.pop(tab_title, None)
 
+    def write_rows_at(self, tab_title, start_row, rows):
+        """Write rows (a list of lists) starting at the given 1-indexed
+        row, via an explicit range update. Unlike append_rows(), this
+        never has to guess where "the table" ends, so it can't misplace
+        data into a deliberately blank row. No-op if rows is empty."""
+        if not rows:
+            return
+        end_row = start_row + len(rows) - 1
+        end_col = chr(ord("A") + max(len(r) for r in rows) - 1) if rows else "A"
+        _execute_with_retry(
+            self.service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=self.sheet_id,
+                range=f"'{tab_title}'!A{start_row}:{end_col}{end_row}",
+                valueInputOption="USER_ENTERED",
+                body={"values": rows},
+            )
+        )
+        self._row_counts[tab_title] = max(self._row_counts.get(tab_title, 0), end_row)
 
-def write_cells(service, sheet_id, updates):
-    """updates: an iterable of (tab_title, cell_a1, value) triples,
-    written in one values().batchUpdate call -- e.g. for scattering a few
-    formula strings across a tab that aren't contiguous rows/columns.
-    No-op if updates is empty."""
-    updates = list(updates)
-    if not updates:
-        return
-    data = [{"range": f"'{tab_title}'!{cell_a1}", "values": [[value]]} for tab_title, cell_a1, value in updates]
-    service.spreadsheets().values().batchUpdate(
-        spreadsheetId=sheet_id, body={"valueInputOption": "USER_ENTERED", "data": data}
-    ).execute()
+    def write_cells(self, updates):
+        """updates: an iterable of (tab_title, cell_a1, value) triples,
+        written in one values().batchUpdate call -- e.g. for scattering a
+        few formula strings across a tab that aren't contiguous
+        rows/columns. No-op if updates is empty."""
+        updates = list(updates)
+        if not updates:
+            return
+        data = [{"range": f"'{tab_title}'!{cell_a1}", "values": [[value]]} for tab_title, cell_a1, value in updates]
+        _execute_with_retry(
+            self.service.spreadsheets()
+            .values()
+            .batchUpdate(spreadsheetId=self.sheet_id, body={"valueInputOption": "USER_ENTERED", "data": data})
+        )
 
+    def row_count(self, tab_title):
+        """Number of rows currently holding data anywhere in columns A-C
+        of tab_title -- used to compute where the next write should
+        start. Deliberately checks the full A:C span rather than just
+        column A: some rows (e.g. a rubric block's Total/Notes rows) only
+        have data in columns B/C, and column-A-only counting would
+        undercount them. Cached after the first call for this tab --
+        every write method above keeps the cache current from then on,
+        so this only ever costs a real API call once per tab per run."""
+        if tab_title not in self._row_counts:
+            resp = _execute_with_retry(
+                self.service.spreadsheets().values().get(spreadsheetId=self.sheet_id, range=f"'{tab_title}'!A:C")
+            )
+            self._row_counts[tab_title] = len(resp.get("values", []))
+        return self._row_counts[tab_title]
 
-def row_count(service, sheet_id, tab_title):
-    """Number of rows currently holding data anywhere in columns A-C of
-    tab_title -- used to compute where the next write should start.
-    Deliberately checks the full A:C span rather than just column A: some
-    rows (e.g. a rubric block's Total/Notes rows) only have data in
-    columns B/C, and column-A-only counting would undercount them."""
-    resp = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=f"'{tab_title}'!A:C").execute()
-    return len(resp.get("values", []))
+    def get_values(self, tab_title, a1_range):
+        """One-off read of tab_title!a1_range -- e.g. an initial fetch of
+        historical rows a backfill script needs the actual values of, not
+        just a count. Not cached (unlike row_count()): callers that need
+        this are expected to call it once per tab, not once per row."""
+        resp = _execute_with_retry(
+            self.service.spreadsheets().values().get(spreadsheetId=self.sheet_id, range=f"'{tab_title}'!{a1_range}")
+        )
+        return resp.get("values", [])
 
+    def seed_row_count(self, tab_title, count):
+        """Lets a caller that already fetched a tab's data some other way
+        (e.g. get_values()) prime the row_count() cache from it, instead
+        of row_count() re-reading the same tab a second time."""
+        self._row_counts[tab_title] = count
 
-def set_columns_wrap(service, sheet_id, tab_title, column_wraps):
-    """Sets wrapStrategy for one or more 0-indexed column ranges in one
-    batchUpdate, spanning every row (row bounds are omitted, so this
-    covers rows written in the future too). column_wraps is an iterable
-    of (start_col_idx, end_col_idx_excl, wrap) tuples, wrap a bool (True
-    -> WRAP, False -> OVERFLOW_CELL/no wrap). Safe to call on every run --
-    idempotent."""
-    sheet_id_num = get_tab_id(service, sheet_id, tab_title)
-    requests = [
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id_num,
-                    "startColumnIndex": start_col_idx,
-                    "endColumnIndex": end_col_idx_excl,
-                },
-                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP" if wrap else "OVERFLOW_CELL"}},
-                "fields": "userEnteredFormat.wrapStrategy",
-            }
-        }
-        for start_col_idx, end_col_idx_excl, wrap in column_wraps
-    ]
-    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
+    # -- formatting ---------------------------------------------------------
 
-
-def hide_columns(service, sheet_id, tab_title, start_col_idx, end_col_idx_excl):
-    """Hides the given 0-indexed column range (e.g. helper columns not
-    meant for a human to look at). Safe to call on every run -- idempotent."""
-    sheet_id_num = get_tab_id(service, sheet_id, tab_title)
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=sheet_id,
-        body={
-            "requests": [
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": sheet_id_num,
-                            "dimension": "COLUMNS",
-                            "startIndex": start_col_idx,
-                            "endIndex": end_col_idx_excl,
-                        },
-                        "properties": {"hiddenByUser": True},
-                        "fields": "hiddenByUser",
-                    }
+    def set_columns_wrap(self, tab_title, column_wraps):
+        """Sets wrapStrategy for one or more 0-indexed column ranges in
+        one batchUpdate, spanning every row (row bounds are omitted, so
+        this covers rows written in the future too). column_wraps is an
+        iterable of (start_col_idx, end_col_idx_excl, wrap) tuples, wrap a
+        bool (True -> WRAP, False -> OVERFLOW_CELL/no wrap). Safe to call
+        on every run -- idempotent."""
+        sheet_id_num = self.get_tab_id(tab_title)
+        requests = [
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id_num,
+                        "startColumnIndex": start_col_idx,
+                        "endColumnIndex": end_col_idx_excl,
+                    },
+                    "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP" if wrap else "OVERFLOW_CELL"}},
+                    "fields": "userEnteredFormat.wrapStrategy",
                 }
-            ]
-        },
-    ).execute()
+            }
+            for start_col_idx, end_col_idx_excl, wrap in column_wraps
+        ]
+        _execute_with_retry(
+            self.service.spreadsheets().batchUpdate(spreadsheetId=self.sheet_id, body={"requests": requests})
+        )
+
+    def hide_columns(self, tab_title, start_col_idx, end_col_idx_excl):
+        """Hides the given 0-indexed column range (e.g. helper columns
+        not meant for a human to look at). Safe to call on every run --
+        idempotent."""
+        sheet_id_num = self.get_tab_id(tab_title)
+        _execute_with_retry(
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.sheet_id,
+                body={
+                    "requests": [
+                        {
+                            "updateDimensionProperties": {
+                                "range": {
+                                    "sheetId": sheet_id_num,
+                                    "dimension": "COLUMNS",
+                                    "startIndex": start_col_idx,
+                                    "endIndex": end_col_idx_excl,
+                                },
+                                "properties": {"hiddenByUser": True},
+                                "fields": "hiddenByUser",
+                            }
+                        }
+                    ]
+                },
+            )
+        )
+
+    def batch_update(self, requests):
+        """Escape hatch for callers (rubrics.py, qa_sample_highlight.py)
+        that need to build their own request list -- still goes through
+        the shared retry wrapper."""
+        if not requests:
+            return
+        return _execute_with_retry(
+            self.service.spreadsheets().batchUpdate(spreadsheetId=self.sheet_id, body={"requests": requests})
+        )

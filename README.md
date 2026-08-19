@@ -244,6 +244,20 @@ matches it.
 backup ticket for the same pull (unlikely, but not impossible), only one
 color wins on that shared cell — John's rule has priority.
 
+## If a script fails with a 429 / rate-limit error
+
+Sheets' default quota is a tight 60 read requests/minute/user, and every
+script goes through `sheets_writer.SheetsClient`, which fetches a tab's
+metadata and row count **at most once per run** (cached from then on) to
+stay well under that — a historical `backfill_rubrics.py` run over 8
+pull dates costs about 4 read requests total, not 60+. On top of that,
+every Sheets API call retries with backoff on a 429/RATE_LIMIT_EXCEEDED/
+RESOURCE_EXHAUSTED response (up to 6 attempts, same idea as the
+NotebookLM project's Slack rate-limit retry). If you still hit this
+(e.g. running two of these scripts back to back within the same minute),
+just re-run the failed workflow once the quota window has reset — no
+data is corrupted by a run that fails partway through.
+
 ### Live link to QA Sample
 
 There's no sync script or scheduled job connecting the rubric tabs to QA

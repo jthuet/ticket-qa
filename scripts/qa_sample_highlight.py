@@ -26,8 +26,12 @@ Highlight colors: John's matching cell -> yellow. Gabby's -> light
 purple. If the same backup ticket were ever used by both evaluators (an
 edge case that shouldn't normally happen), only one color wins for that
 cell -- see JOHN_PRIORITY/GABBY_PRIORITY below.
+
+Takes a sheets_writer.SheetsClient (`client`) rather than a raw
+(service, sheet_id) pair, so the tab-ID/conditional-format-count lookups
+below reuse that client's cached spreadsheet metadata instead of issuing
+their own fresh reads.
 """
-from sheets_writer import get_tab_id
 
 # 0-indexed helper columns -- keep in sync with biweekly_sample.py /
 # backfill_rubrics.py, which are what actually write these.
@@ -68,19 +72,14 @@ def _rule(index, ranges, formula, color):
     }
 
 
-def setup_highlight_rules(service, sheet_id, qa_sample_tab, john_tab, gabby_tab):
+def setup_highlight_rules(client, qa_sample_tab, john_tab, gabby_tab):
     """Deletes any conditional format rules already on the tab and
     recreates these 4 -- simplest way to stay idempotent (calling this
     repeatedly doesn't pile up duplicate rules). Safe/cheap to call on
     every run."""
-    sheet_id_num = get_tab_id(service, sheet_id, qa_sample_tab)
+    sheet_id_num = client.get_tab_id(qa_sample_tab)
+    existing_count = client.conditional_format_count(qa_sample_tab)
 
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
-    existing_count = 0
-    for s in meta.get("sheets", []):
-        if s["properties"]["sheetId"] == sheet_id_num:
-            existing_count = len(s.get("conditionalFormats", []))
-            break
     # Delete highest index first -- deleting index 0 first would shift
     # every later rule's index down by one, deleting the wrong ones.
     delete_requests = [
@@ -108,6 +107,4 @@ def setup_highlight_rules(service, sheet_id, qa_sample_tab, john_tab, gabby_tab)
         _rule(3, [backups_cols], f"=IFERROR(D2={gabby_lookup}, FALSE)", _LIGHT_PURPLE),
     ]
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=sheet_id, body={"requests": delete_requests + add_requests}
-    ).execute()
+    client.batch_update(delete_requests + add_requests)

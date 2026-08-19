@@ -33,8 +33,12 @@ QA Sample tab's Score/Notes cell (e.g. `='jbell-john-rubrics'!C7`) that
 points at exactly where the block they're about to write will land --
 Sheets keeps that reference live from then on, so typing a score/note
 into the rubric tab shows up on QA Sample immediately, no sync script or
-scheduled run required."""
-from sheets_writer import ensure_tab_exists, get_tab_id, row_count, write_rows_at
+scheduled run required.
+
+Every function here takes a sheets_writer.SheetsClient (`client`) instead
+of a raw (service, sheet_id) pair, so tab metadata/row counts get cached
+across a whole script run rather than re-fetched from the API on every
+call -- see that module's docstring for why that matters."""
 
 RUBRIC_METRICS = [
     (
@@ -99,7 +103,7 @@ def build_rubric_block(start_row, pull_date, ticket_link, evaluator_name):
     ]
 
 
-def format_rubric_block(service, sheet_id, tab_title, start_row):
+def format_rubric_block(client, tab_title, start_row):
     """Applies: merges the Notes row's B/C cells into one (so notes can be
     typed anywhere across that width and still land in the same
     underlying cell); a light grey background on the header row; an
@@ -114,7 +118,7 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
     stick to the resulting merged cell -- putting both in one batchUpdate
     (even with the merge request listed first) wasn't enough to guarantee
     that."""
-    sheet_id_num = get_tab_id(service, sheet_id, tab_title)
+    sheet_id_num = client.get_tab_id(tab_title)
     top = start_row - 1  # 0-indexed
     header_row_0 = top + HEADER_ROW_OFFSET
     total_row_0 = top + TOTAL_ROW_OFFSET
@@ -170,15 +174,15 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
             }
         },
     ]
-    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": structural_requests}).execute()
+    client.batch_update(structural_requests)
 
     # Wrap the whole block (Pull Date row through Notes row), 3 columns wide --
     # a separate call, run only after the merge above has fully committed.
     wrap_request = repeat_cell(top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy")
-    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [wrap_request]}).execute()
+    client.batch_update([wrap_request])
 
 
-def next_block_start_row(service, sheet_id, tab_title):
+def next_block_start_row(client, tab_title):
     """The 1-indexed row the NEXT rubric block on tab_title will start on,
     without writing anything -- lets a caller build a formula pointing at
     that block's cells (e.g. for the QA Sample tab) before the block
@@ -191,8 +195,8 @@ def next_block_start_row(service, sheet_id, tab_title):
     data, so a fresh block starts 2 rows after the previous one's last
     written row, never 1 (which would collapse the gap), except for the
     very first block in an empty tab, which starts at row 1."""
-    ensure_tab_exists(service, sheet_id, tab_title)
-    last_row = row_count(service, sheet_id, tab_title)
+    client.ensure_tab_exists(tab_title)
+    last_row = client.row_count(tab_title)
     return 1 if last_row == 0 else last_row + 2
 
 
@@ -208,7 +212,7 @@ def rubric_formula_refs(agent_handle, evaluator_name, start_row):
     return f"='{tab_title}'!C{total_row}", f"='{tab_title}'!B{notes_row}"
 
 
-def append_rubric_block(service, sheet_id, agent_handle, evaluator_name, pull_date, ticket_link, start_row=None):
+def append_rubric_block(client, agent_handle, evaluator_name, pull_date, ticket_link, start_row=None):
     """No-op if ticket_link is falsy -- that evaluator's slot was empty for
     this pull (population smaller than the number of sample slots), so
     there's no ticket to build a rubric block for.
@@ -223,10 +227,10 @@ def append_rubric_block(service, sheet_id, agent_handle, evaluator_name, pull_da
         return None
     tab_title = rubric_tab_title(agent_handle, evaluator_name)
     if start_row is None:
-        start_row = next_block_start_row(service, sheet_id, tab_title)
+        start_row = next_block_start_row(client, tab_title)
     else:
-        ensure_tab_exists(service, sheet_id, tab_title)
+        client.ensure_tab_exists(tab_title)
     block = build_rubric_block(start_row, pull_date, ticket_link, evaluator_name)
-    write_rows_at(service, sheet_id, tab_title, start_row, block)
-    format_rubric_block(service, sheet_id, tab_title, start_row)
+    client.write_rows_at(tab_title, start_row, block)
+    format_rubric_block(client, tab_title, start_row)
     return start_row
