@@ -42,7 +42,7 @@ RUBRIC_METRICS = [
         "Evidence of investigation",
         "Is there a visible sign the response invloved investigation — checked the account/case settings, "
         "reproduced the issue, looked at logs — rather than being a generic or templated answer that "
-        "happened to be in the ballpark? If the question was beyond the",
+        "happened to be in the ballpark?",
     ),
     (
         "Appropriate Escalation",

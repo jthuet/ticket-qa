@@ -184,10 +184,7 @@ Only columns A/B of row 1 and column C of rows 3–6 and row 8's column B
 are ever meant to be hand-edited — everything else is written once by the
 script and left alone. The 4 rubric metrics themselves (name + description
 in columns A/B of rows 3–6) live in `RUBRIC_METRICS` near the top of
-`scripts/rubrics.py` if the wording ever needs to change; note the
-"Evidence of investigation" description currently ends mid-sentence
-("...If the question was beyond the") — that's carried over verbatim from
-how the rubric was originally written, not a bug in this script.
+`scripts/rubrics.py` if the wording ever needs to change.
 
 ## If a workflow fails on "Commit updated sync state" / "Commit seeded sample state"
 
