@@ -22,16 +22,18 @@ result lands in column C. The Notes row instead keeps its label in column
 A, with columns B and C merged into a single cell -- so notes can be typed
 anywhere across that merged width and it's all the same cell underneath
 (Sheets always stores a merged cell's value in its top-left cell, column
-B here, which is what rubric_sync.py reads back).
+B here).
 
 Blocks are appended in order, oldest pull date first -- both the one-time
-historical build (scripts/backfill_rubrics.py, working off whatever's
-already in the QA Sample tab) and the recurring per-run append
-(scripts/biweekly_sample.py, using the row it just wrote) call
-append_rubric_block() for this. scripts/rubric_sync.py reads blocks back
-out (via TOTAL_ROW_OFFSET/NOTES_ROW_OFFSET/BLOCK_STRIDE below) to copy
-completed scores/notes into the QA Sample tab.
-"""
+historical build (scripts/backfill_rubrics.py) and the recurring per-run
+append (scripts/biweekly_sample.py) call append_rubric_block() for this.
+Both callers also use next_block_start_row()/rubric_formula_refs() below
+*before* calling append_rubric_block(), to write a live formula into the
+QA Sample tab's Score/Notes cell (e.g. `='jbell-john-rubrics'!C7`) that
+points at exactly where the block they're about to write will land --
+Sheets keeps that reference live from then on, so typing a score/note
+into the rubric tab shows up on QA Sample immediately, no sync script or
+scheduled run required."""
 from sheets_writer import ensure_tab_exists, get_tab_id, row_count, write_rows_at
 
 RUBRIC_METRICS = [
@@ -63,8 +65,7 @@ RUBRIC_METRICS = [
 
 RUBRIC_HEADER = ["Metric", "Description", "Score (1 Major Miss - 4 Excellent)"]
 
-# 0-indexed offsets, within one block, of each row -- shared with
-# rubric_sync.py so both sides agree on the layout without duplicating it.
+# 0-indexed offsets, within one block, of each row.
 PULL_DATE_ROW_OFFSET = 0
 HEADER_ROW_OFFSET = 1
 FIRST_METRIC_ROW_OFFSET = 2
@@ -99,13 +100,19 @@ def build_rubric_block(start_row, pull_date, ticket_link, evaluator_name):
 
 
 def format_rubric_block(service, sheet_id, tab_title, start_row):
-    """Applies, in one batchUpdate: text wrap across the whole block (so
-    resizing columns once keeps every block readable); a light grey
-    background on the header row; an outline border from the header row
-    through the Total row (deliberately excluding the Pull Date row and
-    the Notes row); and merges the Notes row's B/C cells into one, so
-    notes can be typed anywhere across that width and still land in the
-    same underlying cell."""
+    """Applies, in one batchUpdate: merges the Notes row's B/C cells into
+    one (so notes can be typed anywhere across that width and still land
+    in the same underlying cell); a light grey background on the header
+    row; an outline border from the header row through the Total row
+    (deliberately excluding the Pull Date row and the Notes row); and
+    text wrap across the whole block (so resizing a column once keeps
+    every block readable).
+
+    The merge request runs FIRST and wrap LAST deliberately: merging a
+    range can reset formatting already applied to it, so setting wrap
+    before merging can silently get undone by the merge -- doing it in
+    this order guarantees wrap is the final word on the merged cell's
+    state, not the merge."""
     sheet_id_num = get_tab_id(service, sheet_id, tab_title)
     top = start_row - 1  # 0-indexed
     header_row_0 = top + HEADER_ROW_OFFSET
@@ -128,8 +135,19 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
         }
 
     requests = [
-        # Wrap the whole block (Pull Date row through Notes row), 3 columns wide.
-        repeat_cell(top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy"),
+        # Merge the Notes row's B/C cells into one -- value lives in B afterward.
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id_num,
+                    "startRowIndex": notes_row_0,
+                    "endRowIndex": notes_row_0 + 1,
+                    "startColumnIndex": 1,
+                    "endColumnIndex": 3,
+                },
+                "mergeType": "MERGE_ALL",
+            }
+        },
         # Light grey background on the header row only.
         repeat_cell(
             header_row_0, header_row_0 + 1, 0, 3, {"backgroundColor": _GREY}, "userEnteredFormat.backgroundColor"
@@ -150,41 +168,62 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
                 "right": _BORDER_STYLE,
             }
         },
-        # Merge the Notes row's B/C cells into one -- value lives in B afterward.
-        {
-            "mergeCells": {
-                "range": {
-                    "sheetId": sheet_id_num,
-                    "startRowIndex": notes_row_0,
-                    "endRowIndex": notes_row_0 + 1,
-                    "startColumnIndex": 1,
-                    "endColumnIndex": 3,
-                },
-                "mergeType": "MERGE_ALL",
-            }
-        },
+        # Wrap the whole block (Pull Date row through Notes row), 3 columns wide --
+        # applied LAST so it's guaranteed to stick on the now-merged Notes cell too.
+        repeat_cell(top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy"),
     ]
     service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
 
 
-def append_rubric_block(service, sheet_id, agent_handle, evaluator_name, pull_date, ticket_link):
+def next_block_start_row(service, sheet_id, tab_title):
+    """The 1-indexed row the NEXT rubric block on tab_title will start on,
+    without writing anything -- lets a caller build a formula pointing at
+    that block's cells (e.g. for the QA Sample tab) before the block
+    itself is written. Creates tab_title (empty) if it doesn't exist yet,
+    so the row count comes back as 0 -> start row 1, consistent with what
+    append_rubric_block would do.
+
+    Always leaves one blank row after the previous block before starting
+    the new one -- row_count() only reflects rows that actually have
+    data, so a fresh block starts 2 rows after the previous one's last
+    written row, never 1 (which would collapse the gap), except for the
+    very first block in an empty tab, which starts at row 1."""
+    ensure_tab_exists(service, sheet_id, tab_title)
+    last_row = row_count(service, sheet_id, tab_title)
+    return 1 if last_row == 0 else last_row + 2
+
+
+def rubric_formula_refs(agent_handle, evaluator_name, start_row):
+    """Returns (score_formula, notes_formula): live cross-sheet formula
+    strings pointing at the Total/Notes cells of the block that will
+    start at start_row (see next_block_start_row) on that evaluator's
+    rubric tab -- for writing into the QA Sample tab's Score/Notes
+    columns so they track the rubric tab automatically from then on."""
+    tab_title = rubric_tab_title(agent_handle, evaluator_name)
+    total_row = start_row + TOTAL_ROW_OFFSET
+    notes_row = start_row + NOTES_ROW_OFFSET
+    return f"='{tab_title}'!C{total_row}", f"='{tab_title}'!B{notes_row}"
+
+
+def append_rubric_block(service, sheet_id, agent_handle, evaluator_name, pull_date, ticket_link, start_row=None):
     """No-op if ticket_link is falsy -- that evaluator's slot was empty for
     this pull (population smaller than the number of sample slots), so
     there's no ticket to build a rubric block for.
 
-    Writes to an explicit row range (not append_rows()'s auto-detected
-    "find the table" append) and always leaves one blank row after the
-    previous block before starting the new one -- row_count() only
-    reflects rows that actually have data, so a fresh block always starts
-    2 rows after the previous one's last written row, never 1 (which
-    would collapse the gap), except for the very first block in an empty
-    tab, which starts at row 1."""
+    Pass start_row if the caller already computed it via
+    next_block_start_row() (e.g. to build a QA Sample formula pointing at
+    it beforehand) to avoid recomputing it here; otherwise it's computed
+    fresh. Writes to an explicit row range (not append_rows()'s
+    auto-detected "find the table" append), so placement is never
+    guessed. Returns the start_row used, or None if it was a no-op."""
     if not ticket_link:
-        return
+        return None
     tab_title = rubric_tab_title(agent_handle, evaluator_name)
-    ensure_tab_exists(service, sheet_id, tab_title)
-    last_row = row_count(service, sheet_id, tab_title)
-    start_row = 1 if last_row == 0 else last_row + 2
+    if start_row is None:
+        start_row = next_block_start_row(service, sheet_id, tab_title)
+    else:
+        ensure_tab_exists(service, sheet_id, tab_title)
     block = build_rubric_block(start_row, pull_date, ticket_link, evaluator_name)
     write_rows_at(service, sheet_id, tab_title, start_row, block)
     format_rubric_block(service, sheet_id, tab_title, start_row)
+    return start_row

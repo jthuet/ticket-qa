@@ -120,6 +120,20 @@ def write_rows_at(service, sheet_id, tab_title, start_row, rows):
     ).execute()
 
 
+def write_cells(service, sheet_id, updates):
+    """updates: an iterable of (tab_title, cell_a1, value) triples,
+    written in one values().batchUpdate call -- e.g. for scattering a few
+    formula strings across a tab that aren't contiguous rows/columns.
+    No-op if updates is empty."""
+    updates = list(updates)
+    if not updates:
+        return
+    data = [{"range": f"'{tab_title}'!{cell_a1}", "values": [[value]]} for tab_title, cell_a1, value in updates]
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=sheet_id, body={"valueInputOption": "USER_ENTERED", "data": data}
+    ).execute()
+
+
 def row_count(service, sheet_id, tab_title):
     """Number of rows currently holding data anywhere in columns A-C of
     tab_title -- used to compute where the next write should start.

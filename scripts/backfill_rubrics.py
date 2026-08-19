@@ -3,9 +3,13 @@
 backfill_rubrics.py
 
 One-time historical build: reads every existing row already written to the
-"<agent handle> QA Sample" tab and appends one rubric-scoring block per
-row onto each evaluator's own "<agent handle>-<evaluator>-rubrics" tab
-(see scripts/rubrics.py) -- one block for John's ticket, one for Gabby's.
+"<agent handle> QA Sample" tab and, for each one, appends a rubric-scoring
+block for John's ticket and one for Gabby's onto their own
+"<agent handle>-<evaluator>-rubrics" tab (see scripts/rubrics.py) -- and
+writes a live formula into that QA Sample row's Score/Notes cells pointing
+at the block it just built, exactly like scripts/biweekly_sample.py does
+for new rows going forward. From then on, typing a score or note into a
+rubric tab shows up on QA Sample immediately -- no sync script involved.
 
 Doesn't touch Zendesk at all -- it works entirely off what's already in
 the QA Sample tab (Pull Date, John's Ticket Link, Gabby's Ticket Link
@@ -29,8 +33,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from rubrics import append_rubric_block  # noqa: E402
-from sheets_writer import get_sheets_service, set_columns_wrap  # noqa: E402
+from rubrics import append_rubric_block, next_block_start_row, rubric_formula_refs, rubric_tab_title  # noqa: E402
+from sheets_writer import get_sheets_service, set_columns_wrap, write_cells  # noqa: E402
 
 # 0-indexed columns: H=7 John Score, I=8 John Notes, J=9 Gabby Score,
 # K=10 Gabby Notes. Scores stay unwrapped (short numbers); notes wrap.
@@ -57,15 +61,31 @@ def main():
         print(f"No data rows found in '{QA_SAMPLE_TAB}' -- nothing to build rubrics from.")
         return
 
+    john_tab = rubric_tab_title(AGENT_HANDLE, "john")
+    gabby_tab = rubric_tab_title(AGENT_HANDLE, "gabby")
+
     built = 0
-    for row in rows:
+    for idx, row in enumerate(rows):
+        qa_row = idx + 2  # +2: 1-indexed, plus the header row this range skipped
         pull_date = row[0] if len(row) > 0 else ""
         john_link = row[1] if len(row) > 1 else ""
         gabby_link = row[2] if len(row) > 2 else ""
         if not pull_date:
             continue
-        append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link)
-        append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link)
+
+        cell_updates = []
+        if john_link:
+            john_start = next_block_start_row(service, sheet_id, john_tab)
+            score_formula, notes_formula = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
+            cell_updates += [(QA_SAMPLE_TAB, f"H{qa_row}", score_formula), (QA_SAMPLE_TAB, f"I{qa_row}", notes_formula)]
+            append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
+        if gabby_link:
+            gabby_start = next_block_start_row(service, sheet_id, gabby_tab)
+            score_formula, notes_formula = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
+            cell_updates += [(QA_SAMPLE_TAB, f"J{qa_row}", score_formula), (QA_SAMPLE_TAB, f"K{qa_row}", notes_formula)]
+            append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
+
+        write_cells(service, sheet_id, cell_updates)
         built += 1
 
     set_columns_wrap(service, sheet_id, QA_SAMPLE_TAB, QA_SAMPLE_COLUMN_WRAPS)

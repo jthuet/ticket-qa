@@ -108,10 +108,12 @@ dedupe against, so a second run would duplicate every block.
 
 **If you already ran this before the rubric layout changed** (Notes label
 in column B instead of A, B/C not merged, no borders/shading/wrap, no gap
-row between blocks): those old blocks won't fix themselves — clear all
-rows (and any merges — clearing rows alone doesn't undo a merge) out of
-both `<handle>-john-rubrics` and `<handle>-gabby-rubrics` first, then
-re-run this workflow to rebuild them in the current format.
+row between blocks, or QA Sample's Score/Notes cells holding plain values
+instead of live formulas): those old blocks won't fix themselves — clear
+all rows (and any merges — clearing rows alone doesn't undo a merge) out
+of both `<handle>-john-rubrics` and `<handle>-gabby-rubrics`, and clear
+the existing values out of QA Sample's Score/Notes columns (H–K) too,
+then re-run this workflow to rebuild everything in the current format.
 
 ### 7. Turn on the weekly + biweekly workflows
 
@@ -169,13 +171,13 @@ Status, `<handle>` Comment Date (e.g. "jbell Comment Date").
 
 **QA Sample:** Pull Date, John's Ticket Link, Gabby's Ticket Link, Backup 1
 Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
-Gabby Score, Gabby Notes. Score/Notes columns (H–K) are left blank for you
-to fill in by hand — until each rubric block is scored, at which point
-`scripts/rubric_sync.py` copies the rubric's Total/Notes over automatically
-(see "Rubric tabs" → "Syncing back to QA Sample" below). The two Score
-columns (H, J) are set to never wrap; the two Notes columns (I, K) wrap
-(widen those two columns by hand to taste — the wrap setting alone
-doesn't resize anything).
+Gabby Score, Gabby Notes. The four Score/Notes cells (H–K) aren't static
+values — each is a live formula pointing at that pull's rubric block (e.g.
+`='jbell-john-rubrics'!C7`), so scoring or typing a note on the rubric tab
+shows up here immediately (see "Rubric tabs" → "Live link to QA Sample"
+below). The two Score columns (H, J) are set to never wrap; the two Notes
+columns (I, K) wrap (widen those two columns by hand to taste — the wrap
+setting alone doesn't resize anything).
 
 ## Rubric tabs
 
@@ -198,34 +200,39 @@ empty):
 lands in column C. The Notes row instead keeps its label in column A,
 with B and C merged into a single wide cell so notes can be typed
 anywhere across that width — Sheets always stores a merged cell's value
-in its top-left cell (column B here), which is what `rubric_sync.py`
-reads back. Only column C of rows 3–6, the merged B/C cell of row 8, and
-row 1's A/B are ever meant to be hand-edited — everything else is written
-once by the script and left alone. The 4 rubric metrics themselves (name
-+ description in columns A/B of rows 3–6) live in `RUBRIC_METRICS` near
-the top of `scripts/rubrics.py` if the wording ever needs to change.
+in its top-left cell (column B here). Only column C of rows 3–6, the
+merged B/C cell of row 8, and row 1's A/B are ever meant to be
+hand-edited — everything else is written once by the script and left
+alone. The 4 rubric metrics themselves (name + description in columns
+A/B of rows 3–6) live in `RUBRIC_METRICS` near the top of
+`scripts/rubrics.py` if the wording ever needs to change.
 
 Each block also gets formatting applied automatically: the header row
 (row 2) has a light grey background; an outline border runs around rows
 2–7 (header through Total — deliberately not the Pull Date row or the
 Notes row); every cell in the block wraps text, including the merged
-Notes cell, so resizing a column once makes every block readable.
+Notes cell, so resizing a column once makes every block readable. (The
+Notes cell's merge is applied *before* wrap in the same batchUpdate --
+merging a range can reset formatting already on it, so setting wrap
+first can silently get undone by the merge.)
 
-### Syncing back to QA Sample
+### Live link to QA Sample
 
-Every time `scripts/biweekly_sample.py` runs (every Friday, not only an
-actual sampling week), it also calls `scripts/rubric_sync.py`, which reads
-every rubric block's Total and Notes and copies them into the matching QA
-Sample row (matched by Pull Date): a block's Total → John/Gabby Score, a
-block's Notes → John/Gabby Notes. A Total only copies over if it's a real
-number; Notes only copy over if non-empty.
+There's no sync script or scheduled job connecting the rubric tabs to QA
+Sample — the connection is a live Sheets formula, written once, at the
+same moment the rubric block itself is created (by both
+`scripts/biweekly_sample.py` for new pulls and `scripts/backfill_rubrics.py`
+for historical ones): QA Sample's John Score cell becomes something like
+`='jbell-john-rubrics'!C7` (that block's Total), and John Notes becomes
+`='jbell-john-rubrics'!B8` (that block's merged Notes cell). Because
+these are ordinary cell references, Sheets keeps them current
+automatically — scoring a metric or typing a note on the rubric tab
+updates QA Sample the instant you do it, nothing needs to run.
 
-**Caveat:** a block's Total is a live `=SUM()` over 4 cells, and `SUM()`
-treats blank cells as 0 — so a ticket only partially scored so far (say
-1 of 4 metrics filled in) already has a non-blank, numeric Total, and it
-*will* get synced as though scoring were complete. There's no way to tell
-"genuinely scored a 0" apart from "not scored yet" from the Total alone
-under the current setup.
+**Worth knowing:** a block's Total is a live `=SUM()` over 4 cells, and
+`SUM()` treats blank cells as 0 — so a ticket only partially scored so
+far (say 1 of 4 metrics filled in) already shows a non-blank, numeric
+Total on QA Sample, indistinguishable from "genuinely scored a 0."
 
 ## If a workflow fails on "Commit updated sync state" / "Commit seeded sample state"
 

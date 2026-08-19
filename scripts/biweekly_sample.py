@@ -33,17 +33,15 @@ doesn't need a code change. The tab this writes to is named after the
 agent's email handle (the part before "@"), so switching agents starts a
 fresh tab rather than mixing tickets from two agents into one.
 
-Right after writing the QA Sample row, this also appends one rubric
-scoring block for John's ticket and one for Gabby's ticket onto their
-own "<handle>-john-rubrics" / "<handle>-gabby-rubrics" tabs (see
-scripts/rubrics.py) -- riding along on this script's own cursor, so it
-can't duplicate a block any more than the QA Sample row itself can.
-
-Every run (not just an actual sampling week) also syncs any completed
-rubric Totals/Notes into the QA Sample tab's John/Gabby Score/Notes
-columns (see scripts/rubric_sync.py), so a score an evaluator finishes
-gets picked up within a few days rather than waiting for the next
-2-week sampling cycle.
+Right after computing this run's row, it writes a live formula (not a
+static value) into the QA Sample row's John/Gabby Score and Notes cells,
+pointing at exactly where the matching rubric block is about to be
+written on "<handle>-john-rubrics" / "<handle>-gabby-rubrics" (see
+scripts/rubrics.py's next_block_start_row()/rubric_formula_refs()) --
+then writes the QA Sample row, then the rubric blocks themselves. Sheets
+keeps that formula reference live from then on: typing a score or note
+into the rubric tab shows up on QA Sample immediately, no sync script or
+extra scheduled run required.
 """
 import json
 import os
@@ -53,9 +51,8 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
-from sheets_writer import get_sheets_service, ensure_tab, append_rows, set_columns_wrap  # noqa: E402
-from rubrics import append_rubric_block  # noqa: E402
-from rubric_sync import sync_completed_scores  # noqa: E402
+from sheets_writer import get_sheets_service, ensure_tab, row_count, set_columns_wrap, write_rows_at  # noqa: E402
+from rubrics import append_rubric_block, next_block_start_row, rubric_formula_refs, rubric_tab_title  # noqa: E402
 
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
@@ -150,13 +147,6 @@ def main():
     ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
     set_columns_wrap(service, sheet_id, TAB_TITLE, QA_SAMPLE_COLUMN_WRAPS)
 
-    # Runs every Friday regardless of whether today is an actual sampling
-    # date, so a score/notes entry an evaluator just finished doesn't have
-    # to wait for the next 2-week cycle to show up in the QA Sample tab.
-    synced = sync_completed_scores(service, sheet_id, AGENT_HANDLE, TAB_TITLE)
-    if synced:
-        print(f"Synced {synced} completed rubric score/notes value(s) into '{TAB_TITLE}'.")
-
     today = today_et()
     days_since_anchor = (today - ANCHOR_DATE).days
     if days_since_anchor < 0 or days_since_anchor % WINDOW_DAYS != 0:
@@ -185,12 +175,27 @@ def main():
             f"{window_start_date.isoformat()}..{today.isoformat()} -- filled as many slots as available."
         )
 
-    append_rows(service, sheet_id, TAB_TITLE, [row])
+    pull_date, john_link, gabby_link = row[0], row[1], row[2]
+
+    # Figure out where each evaluator's rubric block is ABOUT to land, so
+    # the QA Sample row can carry a live formula pointing at it from the
+    # moment it's written -- rather than a blank cell some later sync
+    # step would need to fill in.
+    john_tab = rubric_tab_title(AGENT_HANDLE, "john")
+    gabby_tab = rubric_tab_title(AGENT_HANDLE, "gabby")
+    john_start = next_block_start_row(service, sheet_id, john_tab) if john_link else None
+    gabby_start = next_block_start_row(service, sheet_id, gabby_tab) if gabby_link else None
+    if john_start:
+        row[7], row[8] = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
+    if gabby_start:
+        row[9], row[10] = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
+
+    qa_row = row_count(service, sheet_id, TAB_TITLE) + 1
+    write_rows_at(service, sheet_id, TAB_TITLE, qa_row, [row])
     print(f"Appended QA sample row for window {window_start_date.isoformat()}..{today.isoformat()}.")
 
-    pull_date, john_link, gabby_link = row[0], row[1], row[2]
-    append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link)
-    append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link)
+    append_rubric_block(service, sheet_id, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
+    append_rubric_block(service, sheet_id, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
     print(f"Appended rubric block(s) for {pull_date}.")
 
     state["last_window_end"] = today.isoformat()
