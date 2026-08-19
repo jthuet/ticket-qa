@@ -106,9 +106,10 @@ builds a rubric block for each on the john/gabby rubric tabs. Also
 **only run this once** — same reasoning as step 5, there's no cursor to
 dedupe against, so a second run would duplicate every block.
 
-**If you already ran this before the rubric layout changed** (Notes in
-column B instead of C, no borders/shading/wrap, no gap row between
-blocks): those old blocks won't fix themselves — clear all rows out of
+**If you already ran this before the rubric layout changed** (Notes label
+in column B instead of A, B/C not merged, no borders/shading/wrap, no gap
+row between blocks): those old blocks won't fix themselves — clear all
+rows (and any merges — clearing rows alone doesn't undo a merge) out of
 both `<handle>-john-rubrics` and `<handle>-gabby-rubrics` first, then
 re-run this workflow to rebuild them in the current format.
 
@@ -171,8 +172,10 @@ Link, Backup 2 Link, Backup 3 Link, Backup 4 Link, John Score, John Notes,
 Gabby Score, Gabby Notes. Score/Notes columns (H–K) are left blank for you
 to fill in by hand — until each rubric block is scored, at which point
 `scripts/rubric_sync.py` copies the rubric's Total/Notes over automatically
-(see "Rubric tabs" → "Syncing back to QA Sample" below). Those four
-columns are set to never wrap, regardless of content length.
+(see "Rubric tabs" → "Syncing back to QA Sample" below). The two Score
+columns (H, J) are set to never wrap; the two Notes columns (I, K) wrap
+(widen those two columns by hand to taste — the wrap setting alone
+doesn't resize anything).
 
 ## Rubric tabs
 
@@ -188,23 +191,25 @@ empty):
 | 2 | Metric | Description | Score (1 Major Miss - 4 Excellent) |
 | 3–6 | *(the 4 rubric metrics — see `scripts/rubrics.py`'s `RUBRIC_METRICS`)* | | *(blank, for the evaluator to fill in)* |
 | 7 | | Total | `=SUM(C3:C6)` — recalculates live as scores are filled in |
-| 8 | | John Notes *(or Gabby Notes)* | *(blank, for the evaluator to fill in)* |
+| 8 | John Notes *(or Gabby Notes)* | *(B/C merged into one cell — type anywhere across it)* | |
 | 9 | *(blank gap before the next block)* | | |
 
-"Total" and the Notes label sit in column B rather than A specifically so
-it's clear both results (the sum, and the notes text) land in column C.
-Only column C of rows 3–6, row 8's column C, and row 1's A/B are ever
-meant to be hand-edited — everything else is written once by the script
-and left alone. The 4 rubric metrics themselves (name + description in
-columns A/B of rows 3–6) live in `RUBRIC_METRICS` near the top of
-`scripts/rubrics.py` if the wording ever needs to change.
+"Total" is labeled in column B rather than A so it's clear its result
+lands in column C. The Notes row instead keeps its label in column A,
+with B and C merged into a single wide cell so notes can be typed
+anywhere across that width — Sheets always stores a merged cell's value
+in its top-left cell (column B here), which is what `rubric_sync.py`
+reads back. Only column C of rows 3–6, the merged B/C cell of row 8, and
+row 1's A/B are ever meant to be hand-edited — everything else is written
+once by the script and left alone. The 4 rubric metrics themselves (name
++ description in columns A/B of rows 3–6) live in `RUBRIC_METRICS` near
+the top of `scripts/rubrics.py` if the wording ever needs to change.
 
 Each block also gets formatting applied automatically: the header row
 (row 2) has a light grey background; an outline border runs around rows
 2–7 (header through Total — deliberately not the Pull Date row or the
-Notes row); every cell in the block wraps text (so resizing a column once
-makes every block readable) **except** the Notes value cell (row 8,
-column C), which is left unwrapped on purpose.
+Notes row); every cell in the block wraps text, including the merged
+Notes cell, so resizing a column once makes every block readable.
 
 ### Syncing back to QA Sample
 

@@ -130,27 +130,26 @@ def row_count(service, sheet_id, tab_title):
     return len(resp.get("values", []))
 
 
-def set_columns_no_wrap(service, sheet_id, tab_title, start_col_idx, end_col_idx_excl):
-    """Sets wrapStrategy=OVERFLOW_CELL (no wrapping) for the given
-    0-indexed column range, spanning every row (row bounds are omitted,
-    so this covers rows written in the future too). Safe to call on every
-    run -- idempotent."""
+def set_columns_wrap(service, sheet_id, tab_title, column_wraps):
+    """Sets wrapStrategy for one or more 0-indexed column ranges in one
+    batchUpdate, spanning every row (row bounds are omitted, so this
+    covers rows written in the future too). column_wraps is an iterable
+    of (start_col_idx, end_col_idx_excl, wrap) tuples, wrap a bool (True
+    -> WRAP, False -> OVERFLOW_CELL/no wrap). Safe to call on every run --
+    idempotent."""
     sheet_id_num = get_tab_id(service, sheet_id, tab_title)
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=sheet_id,
-        body={
-            "requests": [
-                {
-                    "repeatCell": {
-                        "range": {
-                            "sheetId": sheet_id_num,
-                            "startColumnIndex": start_col_idx,
-                            "endColumnIndex": end_col_idx_excl,
-                        },
-                        "cell": {"userEnteredFormat": {"wrapStrategy": "OVERFLOW_CELL"}},
-                        "fields": "userEnteredFormat.wrapStrategy",
-                    }
-                }
-            ]
-        },
-    ).execute()
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id_num,
+                    "startColumnIndex": start_col_idx,
+                    "endColumnIndex": end_col_idx_excl,
+                },
+                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP" if wrap else "OVERFLOW_CELL"}},
+                "fields": "userEnteredFormat.wrapStrategy",
+            }
+        }
+        for start_col_idx, end_col_idx_excl, wrap in column_wraps
+    ]
+    service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()

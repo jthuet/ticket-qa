@@ -14,12 +14,15 @@ next block (never written to -- see append_rubric_block):
   1 Metric | Description | Score (1 Major Miss - 4 Excellent)
   2-5 <4 metric rows, Score column (C) left blank for the evaluator>
   6         | Total       | =SUM(...)   (live formula over rows 2-5's C cells)
-  7         | <Evaluator> Notes | <blank, for the evaluator to fill in>
+  7 <Evaluator> Notes | <B+C merged into one free-typing cell>
   (row 8, unwritten: blank gap before the next block)
 
-"Total" and "<Evaluator> Notes" are labeled in column B rather than A, so
-it reads clearly that both results (the sum, and the notes text) land in
-column C.
+"Total" is labeled in column B rather than A, so it reads clearly that its
+result lands in column C. The Notes row instead keeps its label in column
+A, with columns B and C merged into a single cell -- so notes can be typed
+anywhere across that merged width and it's all the same cell underneath
+(Sheets always stores a merged cell's value in its top-left cell, column
+B here, which is what rubric_sync.py reads back).
 
 Blocks are appended in order, oldest pull date first -- both the one-time
 historical build (scripts/backfill_rubrics.py, working off whatever's
@@ -91,17 +94,18 @@ def build_rubric_block(start_row, pull_date, ticket_link, evaluator_name):
         RUBRIC_HEADER,
         *metric_rows,
         ["", "Total", f"=SUM(C{first_score_row}:C{last_score_row})"],
-        ["", f"{evaluator_name.capitalize()} Notes", ""],
+        [f"{evaluator_name.capitalize()} Notes", "", ""],
     ]
 
 
 def format_rubric_block(service, sheet_id, tab_title, start_row):
     """Applies, in one batchUpdate: text wrap across the whole block (so
-    resizing columns once keeps every block readable) except the Notes
-    value cell, which stays unwrapped; a light grey background on the
-    header row; and an outline border from the header row through the
-    Total row (deliberately excluding the Pull Date row and the Notes
-    row)."""
+    resizing columns once keeps every block readable); a light grey
+    background on the header row; an outline border from the header row
+    through the Total row (deliberately excluding the Pull Date row and
+    the Notes row); and merges the Notes row's B/C cells into one, so
+    notes can be typed anywhere across that width and still land in the
+    same underlying cell."""
     sheet_id_num = get_tab_id(service, sheet_id, tab_title)
     top = start_row - 1  # 0-indexed
     header_row_0 = top + HEADER_ROW_OFFSET
@@ -125,13 +129,7 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
 
     requests = [
         # Wrap the whole block (Pull Date row through Notes row), 3 columns wide.
-        repeat_cell(
-            top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy"
-        ),
-        # ...except the Notes value cell (column C), which stays unwrapped.
-        repeat_cell(
-            notes_row_0, notes_row_0 + 1, 2, 3, {"wrapStrategy": "OVERFLOW_CELL"}, "userEnteredFormat.wrapStrategy"
-        ),
+        repeat_cell(top, top + BLOCK_LENGTH, 0, 3, {"wrapStrategy": "WRAP"}, "userEnteredFormat.wrapStrategy"),
         # Light grey background on the header row only.
         repeat_cell(
             header_row_0, header_row_0 + 1, 0, 3, {"backgroundColor": _GREY}, "userEnteredFormat.backgroundColor"
@@ -150,6 +148,19 @@ def format_rubric_block(service, sheet_id, tab_title, start_row):
                 "bottom": _BORDER_STYLE,
                 "left": _BORDER_STYLE,
                 "right": _BORDER_STYLE,
+            }
+        },
+        # Merge the Notes row's B/C cells into one -- value lives in B afterward.
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id_num,
+                    "startRowIndex": notes_row_0,
+                    "endRowIndex": notes_row_0 + 1,
+                    "startColumnIndex": 1,
+                    "endColumnIndex": 3,
+                },
+                "mergeType": "MERGE_ALL",
             }
         },
     ]

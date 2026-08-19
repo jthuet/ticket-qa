@@ -53,7 +53,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sampling import sample_window, SLOTS  # noqa: E402
-from sheets_writer import get_sheets_service, ensure_tab, append_rows, set_columns_no_wrap  # noqa: E402
+from sheets_writer import get_sheets_service, ensure_tab, append_rows, set_columns_wrap  # noqa: E402
 from rubrics import append_rubric_block  # noqa: E402
 from rubric_sync import sync_completed_scores  # noqa: E402
 
@@ -139,15 +139,16 @@ def row_for_window(subdomain, email, token, window_end_date, window_start_date):
     return row, picks["_population_size"]
 
 
-# 0-indexed columns H:K -- John Score, John Notes, Gabby Score, Gabby Notes.
-NO_WRAP_COLUMNS = (7, 11)
+# 0-indexed columns: H=7 John Score, I=8 John Notes, J=9 Gabby Score,
+# K=10 Gabby Notes. Scores stay unwrapped (short numbers); notes wrap.
+QA_SAMPLE_COLUMN_WRAPS = [(7, 8, False), (8, 9, True), (9, 10, False), (10, 11, True)]
 
 
 def main():
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     service = get_sheets_service()
     ensure_tab(service, sheet_id, TAB_TITLE, HEADER)
-    set_columns_no_wrap(service, sheet_id, TAB_TITLE, *NO_WRAP_COLUMNS)
+    set_columns_wrap(service, sheet_id, TAB_TITLE, QA_SAMPLE_COLUMN_WRAPS)
 
     # Runs every Friday regardless of whether today is an actual sampling
     # date, so a score/notes entry an evaluator just finished doesn't have

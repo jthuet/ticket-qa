@@ -5,10 +5,12 @@ rubric_sync.py
 Reads every rubric block off "<handle>-john-rubrics" and
 "<handle>-gabby-rubrics" and copies each one's Total (rubric column C,
 "Total" row) into the matching "John Score"/"Gabby Score" cell of the
-"<handle> QA Sample" tab, and each one's Notes (rubric column C,
-"<Evaluator> Notes" row) into "John Notes"/"Gabby Notes" -- matched by
-Pull Date, the only key both tabs share. A score only copies over if it's
-a real number; notes only copy over if non-empty ("if complete").
+"<handle> QA Sample" tab, and each one's Notes (rubric column B, the
+"<Evaluator> Notes" row -- B/C are merged there, and a merged cell's
+value always lives in its top-left cell) into "John Notes"/"Gabby Notes"
+-- matched by Pull Date, the only key both tabs share. A score only
+copies over if it's a real number; notes only copy over if non-empty
+("if complete").
 
 Called from scripts/biweekly_sample.py on every run (not just an actual
 sampling week), so a score/notes an evaluator finishes gets synced back
@@ -57,7 +59,9 @@ def _read_blocks(service, sheet_id, tab_title):
         total_row = block[TOTAL_ROW_OFFSET] if len(block) > TOTAL_ROW_OFFSET else []
         notes_row = block[NOTES_ROW_OFFSET] if len(block) > NOTES_ROW_OFFSET else []
         total_value = total_row[2] if len(total_row) > 2 else ""
-        notes_value = notes_row[2] if len(notes_row) > 2 else ""
+        # Column B, not C -- B/C are merged on the Notes row, and a merged
+        # cell's value always lives in its top-left cell.
+        notes_value = notes_row[1] if len(notes_row) > 1 else ""
         yield pull_date, total_value, notes_value
 
 
