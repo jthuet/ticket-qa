@@ -2,21 +2,26 @@
 """
 biweekly_sample.py
 
-Every two weeks, picks 6 random tickets (from tickets with a public
-jbell@nextpoint.com comment in the preceding 2-week window) for manual QA
-scoring, and appends one row to the "QA Sample" tab of GOOGLE_SHEET_ID: one
-ticket for evaluator John to score, one for evaluator Gabby to score, and
-4 shared backups. "John" and "Gabby" are just the two evaluator slots --
+For every agent in TARGET_AGENT_EMAILS, every two weeks picks 6 random
+tickets (from tickets with a public comment from that agent in the
+preceding 2-week window) for manual QA scoring, and appends one row to
+that agent's own "<handle> QA Sample" tab of GOOGLE_SHEET_ID: one ticket
+for evaluator John to score, one for evaluator Gabby to score, and 4
+shared backups. "John" and "Gabby" are just the two evaluator slots --
 think eval1/eval2 -- not a filter on who commented; every one of the 6
-tickets is drawn from the exact same jbell-commented population, and
-John/Gabby's own email addresses never enter into it.
+tickets is drawn from that one agent's commented population, and
+John/Gabby's own email addresses never enter into it. The same two
+evaluators cover every agent's tab -- there's no per-agent evaluator
+list.
 
 GitHub Actions cron has no native "every 2 weeks" schedule, so this runs
 every Friday (see .github/workflows/biweekly_sample.yml, same 11pm ET time
 as weekly_log.yml) and self-gates: it only actually samples on Fridays that
 are an exact multiple of WINDOW_DAYS after ANCHOR_DATE (2026-08-14 -- the
 most recent date the user's own every-two-weeks cadence should have landed
-on when this was set up). Every other Friday it's a no-op.
+on when this was set up). Every other Friday it's a no-op. This gate is
+shared across every configured agent -- either all of them get sampled
+this run, or none do.
 
 "Today" is always computed in US Eastern time, not UTC -- at 11pm EDT the
 UTC calendar date has already rolled to Saturday, so a naive UTC .date()
@@ -25,23 +30,25 @@ would gate/label every run one day late.
 state/last_sample_window.json records the end date of the last window
 actually sampled (set by this script AND by backfill_sample.py), so a
 manual re-run of the workflow on an already-covered date can't append a
-duplicate row.
+duplicate row. This cursor is shared across every configured agent, not
+per-agent -- see the README's "Adding another agent" for what that means
+for a newly added agent's first-ever sample.
 
-TARGET_AGENT_EMAIL defaults to "jbell@nextpoint.com" but can be overridden
-by a repo secret of the same name, so tracking a different agent later
-doesn't need a code change. The tab this writes to is named after the
-agent's email handle (the part before "@"), so switching agents starts a
-fresh tab rather than mixing tickets from two agents into one.
+TARGET_AGENT_EMAIL is a comma-separated list of agent emails (defaults to
+just "jbell@nextpoint.com" if unset). Add another agent to the list to
+start sampling them going forward -- their own tabs (named after their
+email handle, the part before "@") are created automatically on first
+run.
 
-Right after computing this run's row, it writes a live formula (not a
-static value) into the QA Sample row's John/Gabby Score and Notes cells,
-pointing at exactly where the matching rubric block is about to be
-written on "<handle>-john-rubrics" / "<handle>-gabby-rubrics" (see
-scripts/rubrics.py's next_block_start_row()/rubric_formula_refs()) --
-then writes the QA Sample row, then the rubric blocks themselves. Sheets
-keeps that formula reference live from then on: typing a score or note
-into the rubric tab shows up on QA Sample immediately, no sync script or
-extra scheduled run required.
+For each agent, right after computing this run's row, it writes a live
+formula (not a static value) into the QA Sample row's John/Gabby Score
+and Notes cells, pointing at exactly where the matching rubric block is
+about to be written on "<handle>-john-rubrics" / "<handle>-gabby-rubrics"
+(see scripts/rubrics.py's next_block_start_row()/rubric_formula_refs())
+-- then writes the QA Sample row, then the rubric blocks themselves.
+Sheets keeps that formula reference live from then on: typing a score or
+note into the rubric tab shows up on QA Sample immediately, no sync
+script or extra scheduled run required.
 
 Two hidden helper columns (John/Gabby Rubric Row) record each pull's
 rubric-tab row, so scripts/qa_sample_highlight.py can highlight whichever
@@ -65,9 +72,10 @@ from qa_sample_highlight import setup_highlight_rules  # noqa: E402
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
 # would never kick in.
-TARGET_AGENT_EMAIL = os.environ.get("TARGET_AGENT_EMAIL") or "jbell@nextpoint.com"
-AGENT_HANDLE = TARGET_AGENT_EMAIL.split("@")[0]
-TAB_TITLE = f"{AGENT_HANDLE} QA Sample"
+TARGET_AGENT_EMAILS = [
+    e.strip() for e in (os.environ.get("TARGET_AGENT_EMAIL") or "jbell@nextpoint.com").split(",") if e.strip()
+]
+
 HEADER = [
     "Pull Date",
     "John's Ticket Link",
@@ -89,6 +97,14 @@ ANCHOR_DATE = datetime(2026, 8, 14, tzinfo=ET).date()
 WINDOW_DAYS = 14
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "last_sample_window.json")
+
+
+def agent_handle(agent_email):
+    return agent_email.split("@")[0]
+
+
+def qa_sample_tab_title(handle):
+    return f"{handle} QA Sample"
 
 
 def load_state():
@@ -119,12 +135,12 @@ def et_window_bounds(window_start_date, window_end_date):
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
-def row_for_window(subdomain, email, token, window_end_date, window_start_date):
+def row_for_window(subdomain, email, token, agent_email, window_end_date, window_start_date):
     """Returns (row, population_size) for the 2-week (or, for the one short
     backfill window, shorter) window ending window_end_date, inclusive of
-    both dates."""
+    both dates, for agent_email's commented population."""
     window_start, window_end = et_window_bounds(window_start_date, window_end_date)
-    picks = sample_window(subdomain, email, token, TARGET_AGENT_EMAIL, window_start, window_end)
+    picks = sample_window(subdomain, email, token, agent_email, window_start, window_end)
 
     def link(slot):
         ticket = picks[slot]
@@ -153,16 +169,51 @@ def row_for_window(subdomain, email, token, window_end_date, window_start_date):
 QA_SAMPLE_COLUMN_WRAPS = [(7, 8, False), (8, 9, True), (9, 10, False), (10, 11, True)]
 
 
-def main():
-    sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    client = SheetsClient(get_sheets_service(), sheet_id)
-    client.ensure_tab(TAB_TITLE, HEADER)
-    client.set_columns_wrap(TAB_TITLE, QA_SAMPLE_COLUMN_WRAPS)
-    client.hide_columns(TAB_TITLE, 11, 13)  # L:M, the rubric-row helper columns
-    setup_highlight_rules(
-        client, TAB_TITLE, rubric_tab_title(AGENT_HANDLE, "john"), rubric_tab_title(AGENT_HANDLE, "gabby")
-    )
+def sample_one_agent(client, subdomain, email, token, agent_email, today, window_start_date):
+    """Runs the full per-agent flow: tab setup, sampling, the QA Sample
+    row (with live formulas already pointing at the rubric blocks about
+    to be written), and the rubric blocks themselves."""
+    handle = agent_handle(agent_email)
+    tab_title = qa_sample_tab_title(handle)
+    client.ensure_tab(tab_title, HEADER)
+    client.set_columns_wrap(tab_title, QA_SAMPLE_COLUMN_WRAPS)
+    client.hide_columns(tab_title, 11, 13)  # L:M, the rubric-row helper columns
+    john_tab = rubric_tab_title(handle, "john")
+    gabby_tab = rubric_tab_title(handle, "gabby")
+    setup_highlight_rules(client, tab_title, john_tab, gabby_tab)
 
+    row, population_size = row_for_window(subdomain, email, token, agent_email, today, window_start_date)
+    if population_size < len(SLOTS):
+        print(
+            f"WARNING ({handle}): only {population_size} qualifying ticket(s) in "
+            f"{window_start_date.isoformat()}..{today.isoformat()} -- filled as many slots as available."
+        )
+
+    pull_date, john_link, gabby_link = row[0], row[1], row[2]
+
+    # Figure out where each evaluator's rubric block is ABOUT to land, so
+    # the QA Sample row can carry a live formula pointing at it from the
+    # moment it's written -- rather than a blank cell some later sync
+    # step would need to fill in.
+    john_start = next_block_start_row(client, john_tab) if john_link else None
+    gabby_start = next_block_start_row(client, gabby_tab) if gabby_link else None
+    if john_start:
+        row[7], row[8] = rubric_formula_refs(handle, "john", john_start)
+        row[11] = john_start
+    if gabby_start:
+        row[9], row[10] = rubric_formula_refs(handle, "gabby", gabby_start)
+        row[12] = gabby_start
+
+    qa_row = client.row_count(tab_title) + 1
+    client.write_rows_at(tab_title, qa_row, [row])
+    print(f"[{handle}] Appended QA sample row for window {window_start_date.isoformat()}..{today.isoformat()}.")
+
+    append_rubric_block(client, handle, "john", pull_date, john_link, start_row=john_start)
+    append_rubric_block(client, handle, "gabby", pull_date, gabby_link, start_row=gabby_start)
+    print(f"[{handle}] Appended rubric block(s) for {pull_date}.")
+
+
+def main():
     today = today_et()
     days_since_anchor = (today - ANCHOR_DATE).days
     if days_since_anchor < 0 or days_since_anchor % WINDOW_DAYS != 0:
@@ -183,38 +234,11 @@ def main():
     subdomain = os.environ["ZENDESK_SUBDOMAIN"]
     email = os.environ["ZENDESK_EMAIL"]
     token = os.environ["ZENDESK_API_TOKEN"]
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    client = SheetsClient(get_sheets_service(), sheet_id)
 
-    row, population_size = row_for_window(subdomain, email, token, today, window_start_date)
-    if population_size < len(SLOTS):
-        print(
-            f"WARNING: only {population_size} qualifying ticket(s) in "
-            f"{window_start_date.isoformat()}..{today.isoformat()} -- filled as many slots as available."
-        )
-
-    pull_date, john_link, gabby_link = row[0], row[1], row[2]
-
-    # Figure out where each evaluator's rubric block is ABOUT to land, so
-    # the QA Sample row can carry a live formula pointing at it from the
-    # moment it's written -- rather than a blank cell some later sync
-    # step would need to fill in.
-    john_tab = rubric_tab_title(AGENT_HANDLE, "john")
-    gabby_tab = rubric_tab_title(AGENT_HANDLE, "gabby")
-    john_start = next_block_start_row(client, john_tab) if john_link else None
-    gabby_start = next_block_start_row(client, gabby_tab) if gabby_link else None
-    if john_start:
-        row[7], row[8] = rubric_formula_refs(AGENT_HANDLE, "john", john_start)
-        row[11] = john_start
-    if gabby_start:
-        row[9], row[10] = rubric_formula_refs(AGENT_HANDLE, "gabby", gabby_start)
-        row[12] = gabby_start
-
-    qa_row = client.row_count(TAB_TITLE) + 1
-    client.write_rows_at(TAB_TITLE, qa_row, [row])
-    print(f"Appended QA sample row for window {window_start_date.isoformat()}..{today.isoformat()}.")
-
-    append_rubric_block(client, AGENT_HANDLE, "john", pull_date, john_link, start_row=john_start)
-    append_rubric_block(client, AGENT_HANDLE, "gabby", pull_date, gabby_link, start_row=gabby_start)
-    print(f"Appended rubric block(s) for {pull_date}.")
+    for agent_email in TARGET_AGENT_EMAILS:
+        sample_one_agent(client, subdomain, email, token, agent_email, today, window_start_date)
 
     state["last_window_end"] = today.isoformat()
     save_state(state)

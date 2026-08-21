@@ -2,12 +2,13 @@
 """
 weekly_log.py
 
-Appends one row per ticket with a new public comment from TARGET_AGENT_EMAIL
-since the last run to the "Ticket Log" tab of GOOGLE_SHEET_ID. Runs weekly
-via GitHub Actions (see .github/workflows/weekly_log.yml, Friday 11pm ET);
-the workflow commits state/last_weekly_sync.json back to the repo after
-each run so the next run only covers what's new since then, the same
-cursor pattern the NotebookLM sync project uses for state/last_sync.json.
+For every agent in TARGET_AGENT_EMAILS, appends one row per ticket with a
+new public comment from that agent since the last run, to that agent's
+own "<handle> Ticket Log" tab. Runs weekly via GitHub Actions (see
+.github/workflows/weekly_log.yml, Friday 11pm ET); the workflow commits
+state/last_weekly_sync.json back to the repo after each run so the next
+run only covers what's new since then, per agent -- the same cursor
+pattern the NotebookLM sync project uses for state/last_sync.json.
 
 Required environment variables:
   ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN  -- same Zendesk
@@ -21,11 +22,13 @@ Required environment variables:
   GOOGLE_SHEET_ID  -- the target spreadsheet's ID (from its URL)
 
 Optional environment variable:
-  TARGET_AGENT_EMAIL  -- defaults to "jbell@nextpoint.com" if unset. Set
-    this repo secret to track a different agent later without a code
-    change. The tab this writes to is named after the agent's email
-    handle (the part before "@"), so switching agents starts a fresh tab
-    rather than mixing tickets from two agents into one.
+  TARGET_AGENT_EMAIL  -- comma-separated list of agent emails, e.g.
+    "jbell@nextpoint.com,gsperling@nextpoint.com". Defaults to
+    "jbell@nextpoint.com" if unset. Add a new agent to this list to start
+    tracking them going forward -- their own tab (named after their email
+    handle, the part before "@") is created automatically on first run.
+    See the README's "Adding another agent" for the one-time historical
+    backfill a newly added agent still needs.
 """
 import json
 import os
@@ -40,21 +43,40 @@ from sheets_writer import get_sheets_service, SheetsClient  # noqa: E402
 # `or` (not .get(..., default)) because GitHub Actions substitutes an unset
 # secret as an empty string, not a missing variable -- .get()'s default
 # would never kick in.
-TARGET_AGENT_EMAIL = os.environ.get("TARGET_AGENT_EMAIL") or "jbell@nextpoint.com"
-AGENT_HANDLE = TARGET_AGENT_EMAIL.split("@")[0]
-TAB_TITLE = f"{AGENT_HANDLE} Ticket Log"
-HEADER = ["Week Ending", "Ticket ID", "Ticket Link", "Subject", "Requester", "Status", f"{AGENT_HANDLE} Comment Date"]
+TARGET_AGENT_EMAILS = [
+    e.strip() for e in (os.environ.get("TARGET_AGENT_EMAIL") or "jbell@nextpoint.com").split(",") if e.strip()
+]
 
 ET = ZoneInfo("America/New_York")
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "last_weekly_sync.json")
 DEFAULT_LOOKBACK = timedelta(days=7)
 
 
+def agent_handle(agent_email):
+    return agent_email.split("@")[0]
+
+
+def tab_title_for(handle):
+    return f"{handle} Ticket Log"
+
+
+def header_for(handle):
+    return ["Week Ending", "Ticket ID", "Ticket Link", "Subject", "Requester", "Status", f"{handle} Comment Date"]
+
+
 def load_state():
-    if os.path.exists(STATE_PATH):
-        with open(STATE_PATH) as f:
-            return json.load(f)
-    return {}
+    """{agent_email: {"last_synced_at": iso timestamp}}. Migrates the old
+    single-agent, flat {"last_synced_at": ...} shape (from before multiple
+    agents were supported) into the first configured agent's entry, so an
+    existing cursor isn't lost/reset just because this ran."""
+    if not os.path.exists(STATE_PATH):
+        return {}
+    with open(STATE_PATH) as f:
+        state = json.load(f)
+    if "last_synced_at" in state:
+        old_cursor = state.pop("last_synced_at")
+        state.setdefault(TARGET_AGENT_EMAILS[0], {})["last_synced_at"] = old_cursor
+    return state
 
 
 def save_state(state):
@@ -66,36 +88,42 @@ def save_state(state):
 def main():
     state = load_state()
     window_end = datetime.now(timezone.utc)
-    window_start = (
-        datetime.fromisoformat(state["last_synced_at"])
-        if "last_synced_at" in state
-        else window_end - DEFAULT_LOOKBACK
-    )
 
     subdomain = os.environ["ZENDESK_SUBDOMAIN"]
     email = os.environ["ZENDESK_EMAIL"]
     token = os.environ["ZENDESK_API_TOKEN"]
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    client = SheetsClient(get_sheets_service(), sheet_id)
 
-    tickets = find_tickets_with_public_comment(subdomain, email, token, TARGET_AGENT_EMAIL, window_start, window_end)
+    for agent_email in TARGET_AGENT_EMAILS:
+        handle = agent_handle(agent_email)
+        agent_state = state.setdefault(agent_email, {})
+        window_start = (
+            datetime.fromisoformat(agent_state["last_synced_at"])
+            if "last_synced_at" in agent_state
+            else window_end - DEFAULT_LOOKBACK
+        )
 
-    if tickets:
-        # Labeled with the ET calendar date, matching how the QA Sample
-        # tab's "Pull Date" is dated -- both jobs fire at the same
-        # Friday-11pm-ET moment, which is already the next day in UTC.
-        week_ending = window_end.astimezone(ET).date().isoformat()
-        rows = [
-            [week_ending, t["id"], t["link"], t["subject"], t["requester"], t["status"], t["comment_date"]]
-            for t in sorted(tickets, key=lambda t: t["comment_date"])
-        ]
-        client = SheetsClient(get_sheets_service(), sheet_id)
-        client.ensure_tab(TAB_TITLE, HEADER)
-        client.append_rows(TAB_TITLE, rows)
-        print(f"Appended {len(rows)} ticket(s) to '{TAB_TITLE}'.")
-    else:
-        print(f"No tickets with a new public {AGENT_HANDLE} comment since last sync.")
+        tickets = find_tickets_with_public_comment(subdomain, email, token, agent_email, window_start, window_end)
 
-    state["last_synced_at"] = window_end.isoformat()
+        if tickets:
+            # Labeled with the ET calendar date, matching how the QA Sample
+            # tab's "Pull Date" is dated -- both jobs fire at the same
+            # Friday-11pm-ET moment, which is already the next day in UTC.
+            week_ending = window_end.astimezone(ET).date().isoformat()
+            rows = [
+                [week_ending, t["id"], t["link"], t["subject"], t["requester"], t["status"], t["comment_date"]]
+                for t in sorted(tickets, key=lambda t: t["comment_date"])
+            ]
+            tab_title = tab_title_for(handle)
+            client.ensure_tab(tab_title, header_for(handle))
+            client.append_rows(tab_title, rows)
+            print(f"Appended {len(rows)} ticket(s) to '{tab_title}'.")
+        else:
+            print(f"No tickets with a new public {handle} comment since last sync.")
+
+        agent_state["last_synced_at"] = window_end.isoformat()
+
     save_state(state)
 
 

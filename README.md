@@ -1,35 +1,40 @@
-# jbell ticket QA sampling → Google Sheet
+# Zendesk agent ticket QA sampling → Google Sheet
 
 Separate from the NXP_notebook (Slack+Zendesk → NotebookLM) project, but
 built the same way and can reuse its Zendesk credentials and Google
 service account.
 
-Two recurring jobs plus a one-time historical pull, all writing to one
-growing Google Sheet:
+Tracks one or more Zendesk agents (`jbell@nextpoint.com` by default —
+see "Who gets tracked" below for adding more). Each tracked agent gets
+their own complete, independent set of tabs in one shared Google Sheet,
+kept current by two recurring jobs plus a one-time historical pull:
 
 1. **Weekly ticket log** (`scripts/weekly_log.py`, every Friday 11pm ET) —
-   appends one row per Zendesk ticket that got a new **public** comment
-   from `jbell@nextpoint.com` since the last run, to the sheet's
-   **"Ticket Log"** tab. Append-only, keeps growing forever.
+   for each tracked agent, appends one row per Zendesk ticket that got a
+   new **public** comment from them since the last run, to their own
+   **"`<handle>` Ticket Log"** tab. Append-only, keeps growing forever.
 2. **Biweekly QA sample** (`scripts/biweekly_sample.py`, every other Friday
-   11pm ET) — randomly picks 6 tickets from the same population (tickets
-   with a public jbell comment in the preceding 2-week window): one for
-   evaluator John to score, one for evaluator Gabby to score, and 4 shared
-   backups. Appends one row to the **"QA Sample"** tab, for manual scoring.
-   "John" and "Gabby" are just the two evaluator slots (think eval1/eval2)
-   — every ticket is drawn from the same jbell-commented population, and
-   John/Gabby's own email addresses play no part in the selection.
+   11pm ET) — for each tracked agent, randomly picks 6 tickets from that
+   agent's population (tickets with a public comment from them in the
+   preceding 2-week window): one for evaluator John to score, one for
+   evaluator Gabby to score, and 4 shared backups. Appends one row to
+   their **"`<handle>` QA Sample"** tab, for manual scoring. "John" and
+   "Gabby" are just the two evaluator slots (think eval1/eval2) — every
+   ticket is drawn from that one agent's commented population, and
+   John/Gabby's own email addresses play no part in the selection. The
+   same two evaluators cover every tracked agent.
 3. **One-time historical backfill** (`scripts/backfill_sample.py`, run
-   manually once) — does the same biweekly sample, but for every 2-week
-   window from **2026-05-01 to 2026-08-14**, so the "QA Sample" tab starts
-   with a full history instead of only rows going forward.
+   manually once per agent) — does the same biweekly sample, but for
+   every 2-week window from **2026-05-01 to 2026-08-14**, so a "QA
+   Sample" tab starts with a full history instead of only rows going
+   forward.
 4. **Rubric scoring blocks** — every time the biweekly job appends a QA
-   Sample row, it also appends one rubric-scoring block for John's ticket
-   onto the **"`<handle>`-john-rubrics"** tab, and one for Gabby's ticket
-   onto **"`<handle>`-gabby-rubrics"** (see "Rubric tabs" below).
-   `scripts/backfill_rubrics.py` (run manually once, after the historical
-   backfill) builds the same blocks for every pull date already sitting in
-   the QA Sample tab.
+   Sample row for an agent, it also appends one rubric-scoring block for
+   John's ticket onto that agent's **"`<handle>`-john-rubrics"** tab, and
+   one for Gabby's ticket onto **"`<handle>`-gabby-rubrics"** (see
+   "Rubric tabs" below). `scripts/backfill_rubrics.py` (run manually
+   once per agent, after the historical backfill) builds the same blocks
+   for every pull date already sitting in that agent's QA Sample tab.
 
 Like the NotebookLM project, this is 100% deterministic (no LLM calls) —
 it only ever touches Zendesk's API and Google's Sheets API, using
@@ -81,7 +86,7 @@ them yourself.
 | `ZENDESK_API_TOKEN` | your Zendesk API token |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | paste the entire contents of the service account's JSON key file |
 | `GOOGLE_SHEET_ID` | the Sheet ID from step 3 |
-| `TARGET_AGENT_EMAIL` | optional — defaults to `jbell@nextpoint.com` if this secret doesn't exist. See "Who counts as jbell" below. |
+| `TARGET_AGENT_EMAIL` | optional — comma-separated list of agent emails, defaults to `jbell@nextpoint.com` if this secret doesn't exist. See "Who gets tracked" below. |
 
 ### 5. Run the one-time historical backfill
 
@@ -153,18 +158,48 @@ slots are filled in order (John, then Gabby, then backup 1–4) and any
 remaining slots are left blank, rather than reusing a ticket to force 6.
 The job logs a warning when this happens.
 
-## Who counts as "jbell"
+## Who gets tracked
 
-Both jobs look for public comments authored by `TARGET_AGENT_EMAIL`, which
-defaults to `jbell@nextpoint.com` if the `TARGET_AGENT_EMAIL` repo secret
-isn't set (**internal notes don't count** — only comments Zendesk itself
-marks `public: true`, i.e. ones visible to the ticket requester).
+`TARGET_AGENT_EMAIL` is a **comma-separated list** of Zendesk agent
+emails, e.g. `jbell@nextpoint.com,gsperling@nextpoint.com` (defaults to
+just `jbell@nextpoint.com` if the secret isn't set). Every job — weekly
+log, biweekly sample, both backfills — loops over this whole list, and
+each agent gets their own complete, independent set of tabs: `<handle>
+Ticket Log`, `<handle> QA Sample`, `<handle>-john-rubrics`,
+`<handle>-gabby-rubrics` (handle = the part of their email before `@`).
+Only *public* comments count toward any of this — internal notes don't
+(only comments Zendesk itself marks `public: true`, i.e. ones visible to
+the ticket requester).
 
-To track a different agent later, just add/update the `TARGET_AGENT_EMAIL`
-secret — no code change needed. Each tab is named after the agent's email
-handle (the part before `@`), so switching agents starts fresh tabs
-(e.g. `gsperling Ticket Log`) rather than mixing tickets from two agents
-into the same tab.
+The same two evaluators (John, Gabby) score every agent's sample — there's
+no per-agent evaluator list, just per-agent ticket pools.
+
+### Adding another agent
+
+1. **Don't just add them to the existing `TARGET_AGENT_EMAIL` secret
+   yet.** The recurring jobs would start including them on the very next
+   scheduled run, but they'd have no historical rows and their first
+   biweekly sample wouldn't happen until the next anchor date — you
+   almost always want to backfill them first.
+2. Temporarily **set `TARGET_AGENT_EMAIL` to just the new agent's email**
+   (not the full list — this matters, since both backfill scripts always
+   re-append every window/row for every agent currently in the list, and
+   would duplicate an already-backfilled agent's data if included).
+3. Run **"One-time historical QA sample backfill"**, then **"One-time
+   historical rubric build"** from the Actions tab, same as the original
+   setup (steps 5–6 above).
+4. Now **update `TARGET_AGENT_EMAIL` to the full list** — every agent you
+   want tracked going forward, comma-separated. The weekly and biweekly
+   workflows will pick up the new agent (alongside everyone already
+   there) starting with their very next scheduled run.
+
+The weekly job's state file (`state/last_weekly_sync.json`) is keyed per
+agent, so adding one doesn't disturb any other agent's cursor. The
+biweekly job's sample-window cursor (`state/last_sample_window.json`),
+though, is a single value shared across every agent — it only records
+"have we sampled *today's* window yet," which is the same question
+regardless of which agents are configured, so this doesn't need to be
+per-agent.
 
 ## Sheet columns
 
