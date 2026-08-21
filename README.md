@@ -279,19 +279,33 @@ matches it.
 backup ticket for the same pull (unlikely, but not impossible), only one
 color wins on that shared cell — John's rule has priority.
 
-## If a script fails with a 429 / rate-limit error
+## If a script fails with a 429 / rate-limit error, or a network/SSL error
 
-Sheets' default quota is a tight 60 read requests/minute/user, and every
-script goes through `sheets_writer.SheetsClient`, which fetches a tab's
-metadata and row count **at most once per run** (cached from then on) to
-stay well under that — a historical `backfill_rubrics.py` run over 8
-pull dates costs about 4 read requests total, not 60+. On top of that,
-every Sheets API call retries with backoff on a 429/RATE_LIMIT_EXCEEDED/
-RESOURCE_EXHAUSTED response (up to 6 attempts, same idea as the
-NotebookLM project's Slack rate-limit retry). If you still hit this
-(e.g. running two of these scripts back to back within the same minute),
-just re-run the failed workflow once the quota window has reset — no
-data is corrupted by a run that fails partway through.
+Two different, unrelated failure classes, both handled the same way —
+retry-with-backoff inside `sheets_writer.SheetsClient`, up to a few
+attempts each, with print statements to stderr showing each retry:
+
+- **429 / RATE_LIMIT_EXCEEDED / RESOURCE_EXHAUSTED / 5xx** — Sheets'
+  default quota is a tight 60 read requests/minute/user. `SheetsClient`
+  fetches a tab's metadata and row count **at most once per run**
+  (cached from then on) to stay well under that in the first place — a
+  historical `backfill_rubrics.py` run over 8 pull dates costs about 4
+  read requests total, not 60+ — but if it's still hit (e.g. running two
+  of these scripts back to back within the same minute), each call
+  retries up to 6 times.
+- **Transient network/TLS failures** (a dropped connection, `EOF
+  occurred in violation of protocol`, or similar) — these arrive as a
+  plain socket/SSL exception below the HTTP layer, not as an HTTP error
+  response, and can happen on GitHub's runners regardless of anything
+  this project does. Each call retries up to 4 times.
+
+If a run still fails after retrying either kind, no data is corrupted by
+the partial run itself — but note that historical backfill writes
+(`backfill_sample.py`, `weekly_log.py`) write at an explicit, precomputed
+row range rather than an open-ended append specifically so a later manual
+re-run can't duplicate rows even if the failed attempt's write actually
+landed server-side before the connection dropped. Just re-run the failed
+workflow once you've confirmed (or don't need to worry) about that.
 
 ### Live link to QA Sample
 

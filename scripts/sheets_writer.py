@@ -16,11 +16,15 @@ buys over that:
    each tab's row count AT MOST ONCE per script run, and updates its own
    cache locally afterward -- e.g. creating a tab or writing rows updates
    the cache from the API response it already got back, no extra read.
-2. Retry-with-backoff on rate-limit errors (429 / RATE_LIMIT_EXCEEDED /
-   RESOURCE_EXHAUSTED) for every call, same idea as the NotebookLM
-   project's Slack rate-limit retry in sync_to_notebooklm.py -- caching
-   makes hitting the limit unlikely, but not impossible (e.g. running two
-   scripts back to back), so this is a safety net, not the fix itself.
+2. Retry-with-backoff on every call, for two different failure classes:
+   rate-limit HTTP responses (429 / RATE_LIMIT_EXCEEDED / RESOURCE_
+   EXHAUSTED / 5xx), same idea as the NotebookLM project's Slack
+   rate-limit retry in sync_to_notebooklm.py; and transient network/TLS
+   failures below the HTTP layer entirely (a dropped connection, "EOF
+   occurred in violation of protocol") that a GitHub Actions runner hits
+   occasionally and has no HTTP status code to inspect at all. Caching
+   makes hitting the rate limit unlikely, but neither failure class is
+   preventable outright, so this is a safety net either way.
 
 Unlike the NotebookLM project's Google Docs pool (MultiDocWriter, needed
 because a single Doc caps out around ~1,024,000 characters), this targets
@@ -33,8 +37,11 @@ Required environment variable:
     account key with the Sheets API enabled and this Sheet shared with it
     (Editor access)
 """
+import http.client
 import json
 import os
+import socket
+import ssl
 import sys
 import time
 
@@ -49,6 +56,16 @@ RATE_LIMIT_BASE_WAIT = 15  # seconds; Sheets' per-minute quotas are a rolling
                            # window, so a short exponential backoff isn't
                            # enough -- this needs to be patient, not quick.
 
+MAX_NETWORK_RETRIES = 4
+NETWORK_BASE_WAIT = 5  # seconds; a dropped TLS connection is usually resolved
+                       # by a quick retry, unlike a per-minute quota window.
+
+# Below-the-HTTP-layer failures -- a dropped/reset connection, a TLS
+# handshake or read that never completed ("EOF occurred in violation of
+# protocol"), a DNS hiccup. These arrive as plain socket/ssl exceptions,
+# never as an HttpError, since no HTTP response was ever received to wrap.
+_TRANSIENT_NETWORK_ERRORS = (ssl.SSLError, ConnectionError, TimeoutError, http.client.HTTPException, socket.error)
+
 
 def get_sheets_service():
     creds_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -57,23 +74,46 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
-def _is_rate_limit_error(e):
+def _is_retriable_http_error(e):
     return isinstance(e, HttpError) and (
-        e.resp.status == 429 or "RATE_LIMIT_EXCEEDED" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+        e.resp.status in (429, 500, 502, 503, 504)
+        or "RATE_LIMIT_EXCEEDED" in str(e)
+        or "RESOURCE_EXHAUSTED" in str(e)
     )
 
 
 def _execute_with_retry(request):
-    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+    """Two independent retry budgets, not one shared counter -- rate-limit
+    and network failures have different limits (MAX_RATE_LIMIT_RETRIES vs
+    MAX_NETWORK_RETRIES) and different backoff paces, and giving them
+    separate counters means whichever budget is actually exhausted is the
+    one that decides when to finally let the exception propagate, rather
+    than a single shared attempt count potentially exhausting the wrong
+    budget's check first and silently falling out of the loop."""
+    rate_limit_attempts = 0
+    network_attempts = 0
+    while True:
         try:
             return request.execute()
         except HttpError as e:
-            if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES:
+            if not _is_retriable_http_error(e) or rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
                 raise
-            wait = RATE_LIMIT_BASE_WAIT * (attempt + 1)
+            rate_limit_attempts += 1
+            wait = RATE_LIMIT_BASE_WAIT * rate_limit_attempts
             print(
-                f"Sheets API rate-limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
+                f"Sheets API rate-limited (attempt {rate_limit_attempts}/{MAX_RATE_LIMIT_RETRIES}), "
                 f"retrying in {wait}s...",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+        except _TRANSIENT_NETWORK_ERRORS as e:
+            if network_attempts >= MAX_NETWORK_RETRIES:
+                raise
+            network_attempts += 1
+            wait = NETWORK_BASE_WAIT * network_attempts
+            print(
+                f"Transient network error ({type(e).__name__}: {e}) talking to Sheets "
+                f"(attempt {network_attempts}/{MAX_NETWORK_RETRIES}), retrying in {wait}s...",
                 file=sys.stderr,
             )
             time.sleep(wait)

@@ -89,7 +89,14 @@ def main():
                 print(f"  [{handle}] {window_start}..{window_end}: {population_size} qualifying ticket(s).")
             rows.append(row)
 
-        client.append_rows(tab_title, rows)
+        # write_rows_at (not append_rows) at a precomputed row: if this
+        # write is retried after a dropped connection whose request
+        # actually landed server-side, re-sending the same rows at the
+        # same explicit row range just rewrites them with themselves --
+        # append_rows(), by contrast, would risk a second, duplicate
+        # append on exactly that scenario.
+        start_row = client.row_count(tab_title) + 1
+        client.write_rows_at(tab_title, start_row, rows)
         print(f"Appended {len(rows)} historical row(s) to '{tab_title}'.")
 
     save_state({"last_window_end": ANCHOR_END.isoformat()})

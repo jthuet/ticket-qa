@@ -117,7 +117,12 @@ def main():
             ]
             tab_title = tab_title_for(handle)
             client.ensure_tab(tab_title, header_for(handle))
-            client.append_rows(tab_title, rows)
+            # write_rows_at (not append_rows) at a precomputed row, so a
+            # retry after a dropped connection can't duplicate rows if
+            # the original request actually landed server-side -- see
+            # backfill_sample.py's write for the same reasoning.
+            start_row = client.row_count(tab_title) + 1
+            client.write_rows_at(tab_title, start_row, rows)
             print(f"Appended {len(rows)} ticket(s) to '{tab_title}'.")
         else:
             print(f"No tickets with a new public {handle} comment since last sync.")
